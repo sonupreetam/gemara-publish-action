@@ -15,40 +15,173 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: YAML syntax (action.yml)
         run: ruby -ryaml -e "YAML.load_file('action.yml'); puts 'action.yml OK'"
 
-      - name: Go (cmd/grc)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: cmd/grc/go.mod
-          cache-dependency-path: cmd/grc/go.sum
+          go-version: stable
+          cache: false
 
-      - name: Build grc
-        run: go build -C cmd/grc -o "${RUNNER_TEMP}/grc" .
+      - name: Install grcli from source
+        run: |
+          set -euo pipefail
+          go install github.com/gemaraproj/grcli@main
+          echo "grcli installed: $(grcli --version 2>&1 || echo 'version check skipped')"
 
-      - name: Validate + assemble + pack (dry run)
+      - name: Setup CUE
+        uses: cue-lang/setup-cue@a93fa358375740cd8b0078f76355512b9208acb1 # v1.0.1
+        with:
+          version: latest
+
+      - name: Checkout Gemara spec
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gemaraproj/gemara
+          path: gemara-spec
+          persist-credentials: false
+
+      - name: Validate testdata
         run: |
           set -euo pipefail
           cd testdata
-          GEMARA_REGISTRY_PASSWORD=ci-dummy "${RUNNER_TEMP}/grc" \
-            -registry=localhost:5000 \
-            -repository=ci/test \
-            -tag=ci \
-            -file=minimal-catalog.yaml \
-            -username=ci \
-            -validate=true 2>&1 | tee /tmp/publish-out.txt || true
-          if grep -q "^assemble:" /tmp/publish-out.txt; then
-            echo "::error::Assemble failed"
+          grcli validate -f minimal-catalog.yaml --spec "$GITHUB_WORKSPACE/gemara-spec" 2>&1 | tee /tmp/validate-out.txt
+          echo "Validation passed"
+
+      - name: Publish dry run
+        run: |
+          set -euo pipefail
+          cd testdata
+          grcli publish -f minimal-catalog.yaml \
+            --license Apache-2.0 \
+            --dry-run \
+            --no-sign \
+            --output /tmp/grcli-dry-run 2>&1 | tee /tmp/publish-out.txt
+          if [[ ! -d /tmp/grcli-dry-run ]]; then
+            echo "::error::Dry-run output directory not created"
             exit 1
           fi
-          if grep -q "^validate:" /tmp/publish-out.txt; then
-            echo "::error::Validation failed"
-            exit 1
-          fi
-          if grep -q "^pack:" /tmp/publish-out.txt; then
-            echo "::error::Pack failed"
-            exit 1
-          fi
-          echo "Assemble + pack succeeded (push expected to fail — no registry)"
+          echo "Dry-run output written to /tmp/grcli-dry-run"
+          ls -la /tmp/grcli-dry-run/
+
+      - name: Verify dry-run manifest structure
+        run: |
+          set -euo pipefail
+          test -f /tmp/grcli-dry-run/oci-layout || { echo "::error::Missing oci-layout"; exit 1; }
+          test -f /tmp/grcli-dry-run/index.json || { echo "::error::Missing index.json"; exit 1; }
+          test -d /tmp/grcli-dry-run/blobs || { echo "::error::Missing blobs directory"; exit 1; }
+          grep -qE 'sha256:[a-f0-9]{64}' /tmp/publish-out.txt || { echo "::error::No sha256 digest in output"; exit 1; }
+          echo "Manifest structure and digest output verified"
+
+  # TODO: Enable action-test once grcli v0.1.0 is published to ghcr.io/gemaraproj/grcli.
+  # The composite action pulls grcli from GHCR, which is not yet available.
+  # Until then, the validate job builds grcli from source to exercise the CLI directly.
+  # action-test:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  #       with:
+  #         persist-credentials: false
+  #
+  #     - name: Test composite action (dry-run)
+  #       id: publish
+  #       uses: ./
+  #       with:
+  #         file: testdata/minimal-catalog.yaml
+  #         license: Apache-2.0
+  #         validate: "false"
+  #         dry_run: "true"
+  #         no_sign: "true"
+  #
+  #     - name: Verify action outputs
+  #       env:
+  #         TRUST_MODE: ${{ steps.publish.outputs.trust_mode }}
+  #       run: |
+  #         set -euo pipefail
+  #         if [[ "${TRUST_MODE}" != "resign" ]]; then
+  #           echo "::error::Expected trust_mode=resign, got: ${TRUST_MODE}"
+  #           exit 1
+  #         fi
+  #         test -d grcli-out || { echo "::error::Expected dry-run output directory 'grcli-out'"; exit 1; }
+  #         echo "Action outputs verified"
+
+  input-validation-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test missing license (should fail)
+        id: missing-license
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: ""
+          dry_run: "true"
+          no_sign: "true"
+
+      - name: Assert missing license was rejected
+        if: steps.missing-license.outcome != 'failure'
+        run: |
+          echo "::error::Expected action to fail when license is empty"
+          exit 1
+
+      - name: Test invalid trust_mode (should fail)
+        id: bad-trust
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          trust_mode: "invalid"
+          dry_run: "true"
+          no_sign: "true"
+
+      - name: Assert invalid trust_mode was rejected
+        if: steps.bad-trust.outcome != 'failure'
+        run: |
+          echo "::error::Expected action to fail with invalid trust_mode"
+          exit 1
+
+      - name: Test promote without destination (should fail)
+        id: promote-no-dest
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          promote_to_destination: "true"
+          destination_registry: ""
+          destination_repository: ""
+          destination_username: ""
+          destination_password: ""
+          dry_run: "true"
+          no_sign: "true"
+
+      - name: Assert promote without destination was rejected
+        if: steps.promote-no-dest.outcome != 'failure'
+        run: |
+          echo "::error::Expected action to fail when promote_to_destination=true without destination fields"
+          exit 1
+
+      - name: Test invalid grcli_version (should fail)
+        id: bad-version
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          grcli_version: "not-a-version"
+          dry_run: "true"
+          no_sign: "true"
+
+      - name: Assert invalid grcli_version was rejected
+        if: steps.bad-version.outcome != 'failure'
+        run: |
+          echo "::error::Expected action to fail with invalid grcli_version"
+          exit 1

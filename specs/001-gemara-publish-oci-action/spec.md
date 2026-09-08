@@ -3,43 +3,45 @@
 ## Document overview
 
 This specification describes the **composite** GitHub Action shipped from this repository
-(`action.yml`): publish a root Gemara YAML as an OCI bundle using the go-gemara SDK, plus keyless
-sign/verify and optional cross-registry promotion with explicit trust modes.
+(`action.yml`): validate a root Gemara YAML, publish it as a signed OCI bundle via grcli,
+and optionally promote to a second registry with explicit trust modes.
 
 **Key metadata**
 
 - **Action definition:** `action.yml` (composite)
 - **Related design:** [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md), [docs/adr/](../../docs/adr/)
 
-**Scope boundary:** This repository intentionally stays **transport-only**: it does not assemble Gemara layer manifests or run SBOM/SLSA steps; Pack and OCI contract details live in **go-gemara** (see README).
+**Scope boundary:** This repository is a **thin wrapper** around
+[grcli](https://github.com/gemaraproj/grcli). It does not assemble Gemara layer manifests,
+construct OCI artifacts, or handle signing directly — grcli owns all of that.
 
 ## Background and motivation
 
 CI callers need a **small, auditable** Action that:
 
-1. Accepts a root Gemara artifact YAML (Policy, Catalog, or Guidance) and publishes it as an OCI
-   bundle using go-gemara's `Assemble` + `Pack` + `oras.Copy`.
-2. Authenticates to the registry using **secrets the workflow supplies**, without echoing tokens.
-3. Optionally signs and verifies the published digest with keyless cosign.
+1. Accepts a root Gemara artifact YAML (Policy, Catalog, or Guidance) and publishes it as a
+   signed OCI bundle via grcli.
+2. Authenticates to the hub using the workflow's OIDC token (trusted publishing), without
+   requiring stored secrets.
+3. Signs the artifact keyless and in-process via sigstore-go (handled by grcli).
 4. Optionally promotes the bundle to a second registry with configurable trust modes.
-5. Emits stable outputs for source/destination refs, digests, and verification state for downstream
-   release jobs.
+5. Emits stable outputs for source/destination refs, digests, and verification state for
+   downstream release jobs.
 
 ## Core user scenarios
 
 ### Priority 1: Full publish orchestration for callers
 
-A maintainer calls the action once with publish settings and trust settings; the action builds the
-bundle from a root Gemara YAML via go-gemara (Assemble + Pack + oras.Copy), publishes to the source
-registry, signs/verifies the source digest, optionally promotes to a destination registry, and
-returns source/destination outputs.
+A maintainer calls the action once with the file path and license; the action installs grcli,
+optionally validates the artifact, publishes it (assemble + pack + sign + push), and returns
+digest outputs.
 
-**Test coverage:** `.github/workflows/ci.yml` builds `cmd/grc/`, runs a dry-run assemble/pack
-against `testdata/minimal-catalog.yaml`, and validates the CLI compiled successfully.
+**Test coverage:** `.github/workflows/ci.yml` installs grcli, runs a dry-run validate and
+publish against `testdata/minimal-catalog.yaml`.
 
 ### Priority 2: Destination trust behavior
 
-Callers can choose trust mode:
+Callers can choose trust mode for cross-registry promotion:
 
 - `copy-only`
 - `copy-referrers`
@@ -49,103 +51,105 @@ and verify destination trust with the same workflow identity constraints.
 
 ## Edge cases addressed
 
-- **Missing or invalid root YAML:** Fail before publish if `gemara.Load` validation fails (when `validate: "true"`).
-- **Missing password:** Fail with a clear error.
-- **Digest resolution:** Use `oras resolve` on source/destination references and fail fast if unavailable.
-- **Username default:** When using password auth, default username behavior matches `action.yml` / README (e.g. `GITHUB_ACTOR` when username omitted).
+- **Missing or invalid root YAML:** `grcli validate` fails before publish.
+- **Missing license:** Fail with a clear error (grcli requires `--license`).
+- **Digest resolution:** Use `oras resolve` on destination references and fail fast if unavailable.
+- **Dry-run mode:** `grcli publish --dry-run` writes OCI layout locally without pushing.
 
 ## Functional requirements summary
 
 The Action must:
 
-1. **Set up Go** and build the `grc` CLI from `cmd/grc/`.
-2. **Install ORAS** using the `oras_version` input for digest resolution and promotion copy.
-3. **Publish:** Run the publisher with the caller's `file`, `registry`, `repository`, `tag`, and credentials. The publisher invokes `bundle.Assemble` + `bundle.Pack` + `oras.Copy` from go-gemara.
-4. **Optional sign/verify:** Keyless cosign sign and verify on the source digest.
-5. **Optional promotion:** Copy source to destination registry with selected trust mode and destination sign/verify.
+1. **Install grcli** from its GHCR release artifact using ORAS.
+2. **Install ORAS** using the `oras_version` input for grcli install and promotion copy.
+3. **Validate:** Optionally run `grcli validate` against the Gemara CUE spec.
+4. **Publish:** Run `grcli publish` with the caller's `file` and `license`.
+   grcli handles assembly, packing, signing (in-process keyless), and hub notification.
+5. **Optional promotion:** Copy source to destination registry with selected trust mode and
+   destination sign/verify via cosign.
 6. **Output contract:** Append source/destination refs, digests, and verification booleans to
    `GITHUB_OUTPUT`.
 
 ## Scope boundaries
 
-**In scope:** ORAS install pin, registry auth, go-gemara SDK publish via `grc` CLI, sign/verify
-orchestration, optional promotion, structured outputs.
+**In scope:** grcli install, ORAS install pin, grcli validate/publish invocation,
+optional cross-registry promotion via ORAS + cosign, structured outputs.
 
 **Out of scope:** Gemara YAML schema ownership, layer `mediaType` tables, Pack/Unpack
-implementation details (these live in go-gemara).
+implementation details, signing implementation (these live in grcli / go-gemara).
 
 ## Formal requirements (SHALL / scenarios)
 
-### Requirement: Pinned ORAS CLI install
+### Requirement: Pinned grcli binary install
 
-The Action SHALL download and install the ORAS CLI for the runner OS and architecture using the `oras_version` input as the **sole** version selector for the official ORAS release artifact, and SHALL place the `oras` binary on `PATH` for subsequent commands in the same step.
+The Action SHALL install the grcli binary for the runner platform using ORAS and the
+`grcli_version` input as the version selector, and SHALL place the `grcli` binary on
+`PATH` for subsequent steps.
 
 #### Scenario: Default version is used when input omitted
 
-- **WHEN** the workflow invokes the Action without setting `oras_version`
-- **THEN** the Action SHALL install the default ORAS version documented in `action.yml` and successfully run `oras version`
+- **WHEN** the workflow invokes the Action without setting `grcli_version`
+- **THEN** the Action SHALL install the default grcli version documented in `action.yml`
 
-#### Scenario: Caller pins a specific ORAS version
+#### Scenario: Caller pins a specific grcli version
 
-- **WHEN** the workflow sets `oras_version` to a supported release (e.g. `1.2.0`)
-- **THEN** the Action SHALL install ORAS from the corresponding `oras-project/oras` GitHub release and use that binary for digest resolution and promotion copy
+- **WHEN** the workflow sets `grcli_version` to a supported release (e.g. `v0.1.0`)
+- **THEN** the Action SHALL install grcli from the corresponding GHCR artifact
 
-### Requirement: Registry authentication
+### Requirement: Hub authentication via OIDC
 
-The Action SHALL authenticate to the registry using credentials supplied by the caller, and SHALL NOT print the `password` input to logs.
+The Action SHALL authenticate to the hub using the workflow's GitHub OIDC token.
+The caller workflow must set `permissions: id-token: write`.
 
-#### Scenario: Registry with password
+#### Scenario: Publish with OIDC auth
 
-- **WHEN** `password` is non-empty
-- **THEN** the publisher CLI SHALL authenticate using the provided credentials and SHALL succeed when credentials are valid
+- **WHEN** the caller job has `permissions: id-token: write`
+- **THEN** `grcli publish` SHALL authenticate via the OIDC token and succeed
+  when the repository has a trusted-publisher binding on the hub
 
-#### Scenario: Registry without password is rejected
+### Requirement: License is required
 
-- **WHEN** `password` is empty
-- **THEN** the Action SHALL fail with an error indicating `password` is required
+The Action SHALL require a `license` input (SPDX expression) and SHALL fail before
+publish if it is missing.
 
-### Requirement: Publish via go-gemara SDK
+#### Scenario: Missing license
 
-The Action SHALL build the `grc` CLI (`cmd/grc/`), invoke it with the caller's `file`,
-`registry`, `repository`, `tag`, and credentials, and the CLI SHALL use `bundle.Assemble` +
-`bundle.Pack` + `oras.Copy` from go-gemara to publish the root Gemara YAML as an OCI bundle.
+- **WHEN** `license` is empty
+- **THEN** the Action SHALL fail with an error indicating `license` is required
+
+### Requirement: Publish via grcli
+
+The Action SHALL invoke `grcli publish` with the caller's `file` and `license` inputs.
+grcli handles assembly, packing, signing, and push internally.
 
 #### Scenario: Successful publish
 
-- **WHEN** the root Gemara YAML is valid, registry credentials are correct, and `validate` is `"true"`
-- **THEN** the publisher SHALL assemble dependencies, pack into an OCI bundle, push to the target registry, and emit a digest output
+- **WHEN** the root Gemara YAML is valid and hub auth succeeds
+- **THEN** grcli SHALL publish the bundle and the action SHALL emit a digest output
 
 #### Scenario: Validation failure
 
-- **WHEN** `validate` is `"true"` and `gemara.Load` fails on the root YAML
-- **THEN** the Action SHALL fail before attempting registry push
+- **WHEN** `validate` is `"true"` and `grcli validate` fails
+- **THEN** the Action SHALL fail before attempting publish
 
 ### Requirement: Source and destination output contract
 
-After a successful publish, the Action SHALL write source digest/reference outputs. If promotion is
-enabled, it SHALL write destination digest/reference outputs and trust/verification statuses.
+After a successful publish, the Action SHALL write source digest outputs. If promotion
+is enabled, it SHALL write destination digest/reference outputs and verification status.
 
 #### Scenario: Outputs available to downstream steps
 
 - **WHEN** publish completes successfully
-- **THEN** `digest`, `source_digest`, and `source_ref` SHALL be non-empty outputs
-
-#### Scenario: Promotion outputs emitted
-
-- **WHEN** `promote_to_destination` is enabled and succeeds
-- **THEN** `destination_ref` and `destination_digest` SHALL be emitted and non-empty
+- **THEN** `digest` and `source_digest` SHALL be non-empty outputs
 
 ### Requirement: Destination trust mode
 
-When `promote_to_destination` is enabled, the Action SHALL honor `trust_mode` (`copy-only`,
-`copy-referrers`, `resign`) and SHALL fail for unsupported values.
-
-#### Scenario: Resign destination
-
-- **WHEN** `trust_mode` is `resign`
-- **THEN** the destination digest SHALL be signed and verifiable per configured identity policy
+When `promote_to_destination` is enabled, the Action SHALL honor `trust_mode`
+(`copy-only`, `copy-referrers`, `resign`) and SHALL fail for unsupported values.
 
 ## Success metrics
 
-- **CI green:** Publisher builds and dry-run assemble/pack succeeds against `testdata/minimal-catalog.yaml`.
-- **Consumers** can pin `oras_version` and rely on stable `with:` / `outputs.digest` semantics documented in [README.md](../../README.md).
+- **CI green:** grcli installs, validate and dry-run publish succeed against
+  `testdata/minimal-catalog.yaml`.
+- **Consumers** can pin `grcli_version` and rely on stable `with:` / `outputs.digest`
+  semantics documented in [README.md](../../README.md).

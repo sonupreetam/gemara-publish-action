@@ -4,6 +4,7 @@ title: CI Test Catalog
 metadata:
   id: ci-test-catalog
   type: ControlCatalog
+  version: "0.0.1"
   gemara-version: "1.0.0"
   description: Minimal catalog fixture for CI validation and assembly tests.
   author:

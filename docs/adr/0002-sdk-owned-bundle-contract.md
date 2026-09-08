@@ -4,7 +4,11 @@ title: Delegate all bundle semantics to go-gemara SDK
 ---
 
 - **ADR:** 0002
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0004
+
+> **Note:** This ADR's mechanism (embedded `cmd/grc/` CLI) has been replaced by
+> grcli. See [ADR-0004](0004-wrap-grcli.md). The principle of SDK-owned bundle
+> semantics remains — grcli is now the sole consumer of the go-gemara SDK.
 
 ## Context
 

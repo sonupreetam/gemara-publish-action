@@ -44,6 +44,8 @@ jobs:
           SOURCE_REF: ${{ steps.publish.outputs.source_ref }}
           SOURCE_DIGEST: ${{ steps.publish.outputs.source_digest }}
           TRUST_MODE: ${{ steps.publish.outputs.trust_mode }}
+          VERIFIED_SOURCE: ${{ steps.publish.outputs.verified_source }}
+          VERIFIED_DESTINATION: ${{ steps.publish.outputs.verified_destination }}
         run: |
           set -euo pipefail
           if [[ -z "${DIGEST}" || ! "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
@@ -60,6 +62,14 @@ jobs:
           fi
           if [[ "${TRUST_MODE}" != "resign" ]]; then
             echo "::error::Expected trust_mode=resign, got ${TRUST_MODE}"
+            exit 1
+          fi
+          if [[ "${VERIFIED_SOURCE}" != "false" ]]; then
+            echo "::error::Expected verified_source=false (signing disabled), got ${VERIFIED_SOURCE}"
+            exit 1
+          fi
+          if [[ "${VERIFIED_DESTINATION}" != "false" ]]; then
+            echo "::error::Expected verified_destination=false (no promotion), got ${VERIFIED_DESTINATION}"
             exit 1
           fi
           echo "All outputs verified"
@@ -238,3 +248,49 @@ jobs:
             exit 1
           fi
           echo "Correctly rejected promote without destination"
+
+  regex-fallback:
+    runs-on: ubuntu-latest
+    # Tests the layout tag regex extraction path: publish minimal-catalog.yaml
+    # (which has metadata.version: "0.0.1") WITHOUT setting the version input,
+    # forcing the grep -oE 'oci:.*' fallback in publish.sh.
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Publish without version input (regex fallback)
+        id: publish
+        uses: ./
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          registry: localhost:5000
+          repository: test/regex-fallback
+          tag: latest
+          username: test
+          password: test
+          validate: "false"
+          sign_source: "false"
+          verify_source: "false"
+
+      - name: Verify outputs
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          SOURCE_REF: ${{ steps.publish.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" || ! "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Invalid digest from regex fallback path: ${DIGEST}"
+            exit 1
+          fi
+          if [[ "${SOURCE_REF}" != "localhost:5000/test/regex-fallback@${DIGEST}" ]]; then
+            echo "::error::source_ref mismatch: got ${SOURCE_REF}"
+            exit 1
+          fi
+          echo "Regex fallback path outputs verified"

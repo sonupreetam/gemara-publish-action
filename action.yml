@@ -66,7 +66,7 @@ inputs:
   validate:
     description: >-
       Run grcli validate (cue vet against the authoritative Gemara CUE schemas)
-      before publish. Requires cue on PATH and a Gemara spec checkout (gemara_spec_dir).
+      before publish. CUE is installed automatically when this is enabled.
     required: false
     default: "true"
   gemara_spec_dir:
@@ -83,13 +83,6 @@ inputs:
       Required when the artifact YAML omits metadata.version.
     required: false
     default: ""
-  bundle_version:
-    description: >-
-      Deprecated: no longer consumed. Was used by the old cmd/grc CLI.
-      Retained for backward compatibility; will be removed in a future release.
-    required: false
-    default: "1"
-    deprecationMessage: "bundle_version is no longer consumed and will be removed in a future release."
   working_directory:
     description: Working directory (relative to repo root) for resolving the file input
     required: false
@@ -288,6 +281,12 @@ runs:
       uses: gemaraproj/grcli/.github/actions/install@fd1da672bae6d3bca96d2f8cd46ee89369113707 # v0.2.0
       with:
         version: ${{ inputs.grcli_version }}
+
+    - name: Setup CUE
+      if: inputs.validate == 'true'
+      uses: cue-lang/setup-cue@a93fa358375740cd8b0078f76355512b9208acb1 # v1.0.1
+      with:
+        version: "v0.15.1"
 
     - name: Validate
       if: inputs.validate == 'true'

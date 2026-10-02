@@ -44,26 +44,20 @@ jobs:
           grcli validate -f testdata/minimal-catalog.yaml --spec "$GITHUB_WORKSPACE/gemara-spec"
           echo "Validation passed"
 
-      - name: Publish dry run
+      - name: Publish dry run and verify OCI layout
         run: |
           set -euo pipefail
+          BUNDLE_DIR="${RUNNER_TEMP}/grcli-dry-run"
           grcli publish -f testdata/minimal-catalog.yaml \
             --license Apache-2.0 \
             --dry-run \
             --no-sign \
-            --output /tmp/grcli-dry-run 2>&1 | tee /tmp/publish-out.txt
-          if [[ ! -d /tmp/grcli-dry-run ]]; then
-            echo "::error::Dry-run output directory not created"
-            exit 1
-          fi
-
-      - name: Verify OCI layout structure
-        run: |
-          set -euo pipefail
-          test -f /tmp/grcli-dry-run/oci-layout || { echo "::error::Missing oci-layout"; exit 1; }
-          test -f /tmp/grcli-dry-run/index.json || { echo "::error::Missing index.json"; exit 1; }
-          test -d /tmp/grcli-dry-run/blobs || { echo "::error::Missing blobs directory"; exit 1; }
-          grep -qE 'sha256:[a-f0-9]{64}' /tmp/publish-out.txt || { echo "::error::No sha256 digest in output"; exit 1; }
+            --output "${BUNDLE_DIR}" 2>&1 | tee "${RUNNER_TEMP}/publish-out.txt"
+          test -d "${BUNDLE_DIR}" || { echo "::error::Dry-run output directory not created"; exit 1; }
+          test -f "${BUNDLE_DIR}/oci-layout" || { echo "::error::Missing oci-layout"; exit 1; }
+          test -f "${BUNDLE_DIR}/index.json" || { echo "::error::Missing index.json"; exit 1; }
+          test -d "${BUNDLE_DIR}/blobs" || { echo "::error::Missing blobs directory"; exit 1; }
+          grep -qE 'sha256:[a-f0-9]{64}' "${RUNNER_TEMP}/publish-out.txt" || { echo "::error::No sha256 digest in output"; exit 1; }
           echo "OCI layout structure and digest verified"
 
   migration-check:

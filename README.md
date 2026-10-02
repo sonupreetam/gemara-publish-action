@@ -161,7 +161,7 @@ sigstore-go.
 | `cmd/grc/` built from source at runtime | Pre-built grcli binary from GHCR |
 | No provenance in bundles | SLSA provenance embedded by grcli |
 | No license annotation | `org.opencontainers.image.licenses` OCI annotation |
-| `bundle_version` input | Deprecated — no longer consumed, will be removed |
+| `bundle_version` input | Removed — no longer consumed |
 
 All other inputs and outputs remain backward compatible. Existing direct-mode
 callers need only add `license: <spdx-expression>` to their `with:` block.
@@ -185,12 +185,12 @@ a current-format bundle with no special flags needed.
 **Note:** `metadata.version` must be present in the artifact YAML for grcli
 to pack the bundle. If your artifacts lack this field, set the `version`
 input — the action passes it as `--version` to grcli, which stamps it into
-the bundle's `metadata.version` before packing
-([gemaraproj/grcli#4](https://github.com/gemaraproj/grcli/pull/4)).
+the bundle's `metadata.version` before packing.
 
 ## Repository layout
 
 - **`action.yml`** — Composite action definition (dual-mode: direct + hub).
+- **`scripts/`** — Shell logic for publish and finalize steps (`lib.sh`, `publish.sh`, `finalize.sh`).
 - **`testdata/`** — Minimal Gemara catalog fixtures and legacy bundle OCI layout for CI tests.
 - **`docs/`** — Architecture documentation and ADRs.
 - **`specs/`** — Feature specifications.

@@ -22,12 +22,12 @@ source "${SCRIPT_DIR}/lib.sh"
 
 : "${GITHUB_OUTPUT:?}"
 
-# Initialize default outputs
-echo "destination_ref=" >> "${GITHUB_OUTPUT}"
-echo "destination_digest=" >> "${GITHUB_OUTPUT}"
-echo "trust_mode=${TRUST_MODE}" >> "${GITHUB_OUTPUT}"
-echo "verified_source=false" >> "${GITHUB_OUTPUT}"
-echo "verified_destination=false" >> "${GITHUB_OUTPUT}"
+# Output accumulators -- each key written exactly once at the end.
+OUT_SOURCE_REF=""
+OUT_VERIFIED_SOURCE="false"
+OUT_VERIFIED_DESTINATION="false"
+OUT_DESTINATION_REF=""
+OUT_DESTINATION_DIGEST=""
 
 if [[ -z "${SOURCE_DIGEST:-}" ]]; then
   echo "::error::No digest produced by publish step."
@@ -36,7 +36,6 @@ fi
 if ! SOURCE_DIGEST=$(normalize_oci_digest "$SOURCE_DIGEST"); then
   exit 1
 fi
-echo "source_digest=${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
 
 if [[ -z "${ALLOWED_IDENTITY_REGEX:-}" ]]; then
   ALLOWED_IDENTITY_REGEX="${DEFAULT_ALLOWED_IDENTITY_REGEX}"
@@ -54,15 +53,15 @@ if [[ "${PUBLISH_MODE}" == "hub" ]]; then
   # grcli handled signing in-process. The source ref is
   # hub-managed; we record what we know (repository + digest).
   if [[ -n "${REPOSITORY}" ]]; then
-    echo "source_ref=${REPOSITORY}@${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
+    OUT_SOURCE_REF="${REPOSITORY}@${SOURCE_DIGEST}"
   else
     echo "::warning::Hub mode without repository input — source_ref is digest-only (@${SOURCE_DIGEST}) and not a pullable OCI reference."
-    echo "source_ref=@${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
+    OUT_SOURCE_REF="@${SOURCE_DIGEST}"
   fi
 else
   # ── Direct mode finalize ──────────────────────────────────
   SOURCE_REF="${REGISTRY}/${REPOSITORY}@${SOURCE_DIGEST}"
-  echo "source_ref=${SOURCE_REF}" >> "${GITHUB_OUTPUT}"
+  OUT_SOURCE_REF="${SOURCE_REF}"
 
   source_user="${USERNAME:-${GITHUB_ACTOR:-oauth2}}"
 
@@ -81,15 +80,31 @@ else
     if [[ "${VERIFY_SOURCE}" == "true" ]]; then
       echo "Verifying source digest: ${SOURCE_REF}"
       verify_ref "${SOURCE_REF}"
-      echo "verified_source=true" >> "${GITHUB_OUTPUT}"
+      OUT_VERIFIED_SOURCE="true"
     fi
   fi
 fi
 
-# ── Promotion (both modes) ───────────────────────────────────
+# ── Write non-promotion outputs ──────────────────────────────
+# Written here so they are emitted even when promotion is skipped.
+{
+  echo "source_ref=${OUT_SOURCE_REF}"
+  echo "source_digest=${SOURCE_DIGEST}"
+  echo "trust_mode=${TRUST_MODE}"
+  echo "verified_source=${OUT_VERIFIED_SOURCE}"
+} >> "${GITHUB_OUTPUT}"
+
 if [[ "${PROMOTE}" != "true" ]]; then
+  # Write promotion defaults and exit.
+  {
+    echo "destination_ref="
+    echo "destination_digest="
+    echo "verified_destination=false"
+  } >> "${GITHUB_OUTPUT}"
   exit 0
 fi
+
+# ── Promotion (both modes) ───────────────────────────────────
 
 if [[ -z "${DEST_REPOSITORY}" || -z "${DEST_USERNAME}" || -z "${DEST_PASSWORD}" ]]; then
   echo "::error::destination_repository, destination_username, and destination_password are required when promote_to_destination is true."
@@ -102,8 +117,6 @@ fi
 
 # Determine the source reference for ORAS copy.
 if [[ "${PUBLISH_MODE}" == "hub" ]]; then
-  # In hub mode, the source is on the hub-managed registry.
-  # Promotion requires the repository input to construct the source ref.
   if [[ -z "${REPOSITORY}" ]]; then
     echo "::error::repository input is required for promotion in hub mode (needed to construct source reference for ORAS copy)."
     exit 1
@@ -111,7 +124,6 @@ if [[ "${PUBLISH_MODE}" == "hub" ]]; then
   SOURCE_COPY_REF="${REPOSITORY}@${SOURCE_DIGEST}"
 else
   SOURCE_COPY_REF="${REGISTRY}/${REPOSITORY}:${TAG}"
-  # In direct mode, password is needed to pull from source during promotion.
   if [[ -z "${PASSWORD}" ]]; then
     echo "::error::password is required to pull source image from registry during promotion."
     exit 1
@@ -152,18 +164,25 @@ fi
 if ! DEST_DIGEST=$(normalize_oci_digest "$DEST_DIGEST"); then
   exit 1
 fi
-DEST_REF="${DEST_REGISTRY}/${DEST_REPOSITORY}@${DEST_DIGEST}"
+OUT_DESTINATION_REF="${DEST_REGISTRY}/${DEST_REPOSITORY}@${DEST_DIGEST}"
+OUT_DESTINATION_DIGEST="${DEST_DIGEST}"
 
-if [[ "${TRUST_MODE}" == "resign" || "${SIGN_DESTINATION}" == "true" ]]; then
-  echo "Signing destination digest: ${DEST_REF}"
-  cosign sign -y "${DEST_REF}"
+if [[ "${NO_SIGN}" != "true" ]]; then
+  if [[ "${TRUST_MODE}" == "resign" || "${SIGN_DESTINATION}" == "true" ]]; then
+    echo "Signing destination digest: ${OUT_DESTINATION_REF}"
+    cosign sign -y "${OUT_DESTINATION_REF}"
+  fi
+
+  if [[ "${VERIFY_DESTINATION}" == "true" ]]; then
+    echo "Verifying destination digest: ${OUT_DESTINATION_REF}"
+    verify_ref "${OUT_DESTINATION_REF}"
+    OUT_VERIFIED_DESTINATION="true"
+  fi
 fi
 
-if [[ "${VERIFY_DESTINATION}" == "true" ]]; then
-  echo "Verifying destination digest: ${DEST_REF}"
-  verify_ref "${DEST_REF}"
-  echo "verified_destination=true" >> "${GITHUB_OUTPUT}"
-fi
-
-echo "destination_ref=${DEST_REF}" >> "${GITHUB_OUTPUT}"
-echo "destination_digest=${DEST_DIGEST}" >> "${GITHUB_OUTPUT}"
+# ── Write promotion outputs ──────────────────────────────────
+{
+  echo "destination_ref=${OUT_DESTINATION_REF}"
+  echo "destination_digest=${OUT_DESTINATION_DIGEST}"
+  echo "verified_destination=${OUT_VERIFIED_DESTINATION}"
+} >> "${GITHUB_OUTPUT}"

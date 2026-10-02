@@ -15,7 +15,6 @@ Used in `.github/workflows/ci.yml` and `.github/workflows/action-test.yml`.
 
 Same structure as `minimal-catalog.yaml` but **omits `metadata.version`**.
 Used to test the `version` action input, which passes `--version` to grcli
-to stamp the version from the CLI
-([gemaraproj/grcli#4](https://github.com/gemaraproj/grcli/pull/4)).
+to stamp the version from the CLI.
 
 Used in `.github/workflows/action-test.yml` (version-flag job).

@@ -166,6 +166,22 @@ sigstore-go.
 All other inputs and outputs remain backward compatible. Existing direct-mode
 callers need only add `license: <spdx-expression>` to their `with:` block.
 
+### Legacy bundle compatibility
+
+| Tool | Legacy bundle (pre-grcli) | Current bundle (grcli) |
+|------|--------------------------|----------------------|
+| `grcli unpack` | **Pass** with `--no-verify` | Pass |
+| `grcli cat` | **Pass** | Pass |
+| ORAS push/pull | **Pass** — valid OCI layout | Pass |
+
+Legacy bundles (published by the old `cmd/grc/` CLI via `go-gemara`) use the
+same core media types and layer annotations as current bundles but lack SLSA
+provenance, license annotations, and Sigstore signature referrers.
+`grcli unpack --no-verify` and `grcli cat` both work on legacy bundles.
+To upgrade a legacy bundle so it includes provenance and signing, simply
+re-publish the original YAML through the action — a normal publish produces
+a current-format bundle with no special flags needed.
+
 **Note:** `metadata.version` must be present in the artifact YAML for grcli
 to pack the bundle. If your artifacts lack this field, set the `version`
 input — the action passes it as `--version` to grcli, which stamps it into
@@ -175,7 +191,7 @@ the bundle's `metadata.version` before packing
 ## Repository layout
 
 - **`action.yml`** — Composite action definition (dual-mode: direct + hub).
-- **`testdata/`** — Minimal Gemara catalog fixtures for CI tests.
+- **`testdata/`** — Minimal Gemara catalog fixtures and legacy bundle OCI layout for CI tests.
 - **`docs/`** — Architecture documentation and ADRs.
 - **`specs/`** — Feature specifications.
 

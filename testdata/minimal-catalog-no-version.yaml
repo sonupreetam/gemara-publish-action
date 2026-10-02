@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-# Minimal Gemara ControlCatalog for CI tests.
-title: CI Test Catalog
+# Minimal Gemara ControlCatalog without metadata.version.
+# Used to test the --version flag path: grcli stamps the version from the
+# CLI into the bundle before packing (gemaraproj/grcli#4).
+title: CI Test Catalog (no version)
 metadata:
-  id: ci-test-catalog
+  id: ci-test-catalog-no-version
   type: ControlCatalog
-  version: "0.0.1"
   gemara-version: "1.0.0"
-  description: Minimal catalog fixture for CI validation and assembly tests.
+  description: Catalog fixture that omits metadata.version for CI --version flag tests.
   author:
     id: ci
     name: CI Test

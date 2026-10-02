@@ -1,13 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Phases: (1) assemble + pack + push via go-gemara, (2) keyless sign/verify on source,
-# (3) optional promote, (4) sign/verify on destination. This action does not generate
-# SLSA or SBOM attestations—callers add those in separate workflow steps or reusables.
-# See README: boundaries, and caller patterns (concurrency, ref gates, environments).
+# Two publish modes:
+#   Direct (default): grcli dry-run packs locally, ORAS pushes to the caller's
+#     registry, cosign signs/verifies externally. Caller supplies registry +
+#     username + password.
+#   Hub: grcli publish pushes through grc.store (hub discovery, OIDC auth,
+#     in-process sigstore-go signing). Caller sets grcli_url; no registry
+#     credentials needed for the source publish.
+#
+# Both modes: (1) validate via grcli, (2) publish, (3) optional promote,
+# (4) sign/verify on destination.
+# grcli packs SLSA provenance into the bundle manifest in both modes.
+# See README: boundaries (what is not in this action).
 name: Publish Gemara OCI bundle
 description: >-
-  Assemble a root Gemara YAML into an OCI bundle, push to a registry, sign/verify,
-  and optionally promote to a second registry. Uses go-gemara bundle SDK internally.
+  Assemble a root Gemara YAML into an OCI bundle via grcli. In direct mode
+  (default), push to any OCI registry via ORAS and sign with cosign. In hub
+  mode (grcli_url set), publish through grc.store with in-process signing.
+  Optionally promote to a second registry in either mode.
   Boolean flags use the strings "true" / "false".
 
 branding:
@@ -16,49 +26,108 @@ branding:
 
 inputs:
   registry:
-    description: Registry host (e.g. ghcr.io)
+    description: >-
+      Registry host (e.g. ghcr.io). Used in direct mode only.
     required: false
     default: ghcr.io
   repository:
-    description: Repository path without registry (e.g. org/gemara/my-bundle)
-    required: true
+    description: >-
+      Repository path without registry (e.g. org/gemara/my-bundle).
+      Required in direct mode. In hub mode, optional override for
+      grcli publish --repository.
+    required: false
+    default: ""
   tag:
-    description: Tag to push
-    required: true
+    description: >-
+      Tag to push. Required in direct mode (used as the ORAS push tag).
+      Not used in hub mode (grcli derives the tag from metadata.version).
+    required: false
+    default: ""
   file:
     description: Root Gemara artifact YAML (Policy, Catalog, or Guidance), relative to working_directory
     required: true
+  license:
+    description: >-
+      SPDX license expression for the published artifact (e.g. Apache-2.0).
+      Required by grcli for bundle packing. Stamped as the
+      org.opencontainers.image.licenses OCI annotation.
+    required: true
   username:
-    description: Registry user
+    description: >-
+      Registry user. Used in direct mode only.
     required: false
     default: ""
   password:
-    description: Registry token
-    required: true
+    description: >-
+      Registry token. Required in direct mode. Not used in hub mode
+      (grcli authenticates via OIDC).
+    required: false
+    default: ""
   validate:
     description: >-
-      Run gemara.Load schema validation and cue vet against the authoritative
-      Gemara CUE schemas before assemble.
+      Run grcli validate (cue vet against the authoritative Gemara CUE schemas)
+      before publish. Requires cue on PATH and a Gemara spec checkout (gemara_spec_dir).
     required: false
     default: "true"
+  gemara_spec_dir:
+    description: >-
+      Path to a local Gemara spec checkout for grcli validate --spec.
+      Recommended when validate is true; omit only if grcli can locate
+      the spec on its own.
+    required: false
+    default: ""
+  version:
+    description: >-
+      Artifact version stamped into the bundle's metadata.version before
+      packing (overrides the file's value). Passed as --version to grcli.
+      Required when the artifact YAML omits metadata.version.
+    required: false
+    default: ""
   bundle_version:
-    description: Bundle format version
+    description: >-
+      Deprecated: no longer consumed. Was used by the old cmd/grc CLI.
+      Retained for backward compatibility; will be removed in a future release.
     required: false
     default: "1"
+    deprecationMessage: "bundle_version is no longer consumed and will be removed in a future release."
   working_directory:
     description: Working directory (relative to repo root) for resolving the file input
     required: false
     default: "."
+  grcli_version:
+    description: >-
+      grcli release tag to install (e.g. v0.2.0). Pin to a release tag for
+      reproducible builds.
+    required: false
+    default: "v0.2.0"
+  grcli_url:
+    description: >-
+      Hub base URL for grcli commands (e.g. https://hub.grc.store). When set,
+      the action uses hub mode: grcli publish pushes through the hub with
+      OIDC auth and in-process signing. When empty (default), the action
+      uses direct mode: grcli dry-run + ORAS push + cosign sign.
+    required: false
+    default: ""
+  no_sign:
+    description: >-
+      Skip signing during publish. In hub mode, passed as grcli publish
+      --no-sign. In direct mode, disables the cosign sign step.
+    required: false
+    default: "false"
   oras_version:
     description: ORAS CLI version (no v prefix)
     required: false
     default: "1.2.0"
   sign_source:
-    description: Keyless-sign source digest after publish
+    description: >-
+      Keyless-sign source digest after publish (direct mode only; in hub
+      mode grcli signs in-process).
     required: false
     default: "true"
   verify_source:
-    description: Verify source digest signature after sign/publish
+    description: >-
+      Verify source digest signature after publish (direct mode only; in
+      hub mode grcli handles verification).
     required: false
     default: "true"
   promote_to_destination:
@@ -147,8 +216,13 @@ runs:
       shell: bash
       env:
         FILE: ${{ inputs.file }}
+        LICENSE: ${{ inputs.license }}
         PASSWORD: ${{ inputs.password }}
+        REPOSITORY: ${{ inputs.repository }}
+        TAG: ${{ inputs.tag }}
+        GRCLI_URL: ${{ inputs.grcli_url }}
         PROMOTE: ${{ inputs.promote_to_destination }}
+        DEST_REGISTRY: ${{ inputs.destination_registry }}
         DEST_REPOSITORY: ${{ inputs.destination_repository }}
         DEST_USERNAME: ${{ inputs.destination_username }}
         DEST_PASSWORD: ${{ inputs.destination_password }}
@@ -159,10 +233,30 @@ runs:
           echo "::error::file input is required"
           exit 1
         fi
-        if [[ -z "${PASSWORD}" ]]; then
-          echo "::error::password input is required"
+        if [[ -z "${LICENSE}" ]]; then
+          echo "::error::license input is required (SPDX expression, e.g. Apache-2.0)"
           exit 1
         fi
+
+        # Mode detection: hub mode when grcli_url is set, direct mode otherwise.
+        if [[ -n "${GRCLI_URL}" ]]; then
+          echo "Mode: hub (grcli_url=${GRCLI_URL})"
+        else
+          echo "Mode: direct (ORAS push)"
+          if [[ -z "${REPOSITORY}" ]]; then
+            echo "::error::repository input is required in direct mode"
+            exit 1
+          fi
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::tag input is required in direct mode"
+            exit 1
+          fi
+          if [[ -z "${PASSWORD}" ]]; then
+            echo "::error::password input is required in direct mode"
+            exit 1
+          fi
+        fi
+
         case "${TRUST_MODE}" in
           copy-only|copy-referrers|resign) ;;
           *)
@@ -171,8 +265,8 @@ runs:
             ;;
         esac
         if [[ "${PROMOTE}" == "true" ]]; then
-          if [[ -z "${DEST_REPOSITORY}" || -z "${DEST_USERNAME}" || -z "${DEST_PASSWORD}" ]]; then
-            echo "::error::destination_repository, destination_username, and destination_password are required when promote_to_destination=true"
+          if [[ -z "${DEST_REGISTRY}" || -z "${DEST_REPOSITORY}" || -z "${DEST_USERNAME}" || -z "${DEST_PASSWORD}" ]]; then
+            echo "::error::destination_registry, destination_repository, destination_username, and destination_password are required when promote_to_destination=true"
             exit 1
           fi
         fi
@@ -184,91 +278,150 @@ runs:
 
     - name: Install cosign
       if: >-
-        inputs.sign_source == 'true' || inputs.verify_source == 'true' ||
+        (inputs.grcli_url == '' && (inputs.sign_source == 'true' || inputs.verify_source == 'true')) ||
         inputs.promote_to_destination == 'true'
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       with:
         cosign-release: ${{ inputs.cosign_version }}
 
-    - name: Set up Go
-      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+    - name: Install grcli
+      uses: gemaraproj/grcli/.github/actions/install@fd1da672bae6d3bca96d2f8cd46ee89369113707 # v0.2.0
       with:
-        go-version-file: ${{ github.action_path }}/cmd/grc/go.mod
-        cache-dependency-path: ${{ github.action_path }}/cmd/grc/go.sum
+        version: ${{ inputs.grcli_version }}
 
-    - name: Setup CUE
-      if: inputs.validate == 'true'
-      uses: cue-lang/setup-cue@a93fa358375740cd8b0078f76355512b9208acb1 # v1.0.1
-      with:
-        version: latest
-
-    - name: CUE schema validation
+    - name: Validate
       if: inputs.validate == 'true'
       shell: bash
       env:
         INPUT_WORKING_DIRECTORY: ${{ inputs.working_directory }}
         INPUT_FILE: ${{ inputs.file }}
+        GRCLI_SPEC_DIR: ${{ inputs.gemara_spec_dir }}
       run: |
         set -euo pipefail
         cd "${GITHUB_WORKSPACE}/${INPUT_WORKING_DIRECTORY}"
-        FILE="$(realpath "${INPUT_FILE}")"
-
-        TYPE=$(yq -r '.metadata.type' "$FILE" 2>/dev/null || true)
-        if [[ -z "$TYPE" ]]; then
-          echo "::error::Could not detect metadata.type in ${INPUT_FILE}"
+        RESOLVED_DIR="$(pwd -P)"
+        if [[ "${RESOLVED_DIR}" != "${GITHUB_WORKSPACE}"* ]]; then
+          echo "::error::working_directory resolves outside the workspace"
           exit 1
         fi
-
-        case "$TYPE" in
-          Policy)           CUE_DEF="#Policy" ;;
-          ControlCatalog)   CUE_DEF="#ControlCatalog" ;;
-          GuidanceCatalog)  CUE_DEF="#GuidanceCatalog" ;;
-          *)
-            echo "::warning::Unknown Gemara type '${TYPE}' — skipping CUE validation"
-            exit 0
-            ;;
-        esac
-
-        echo "CUE validate: ${INPUT_FILE} as ${CUE_DEF}"
-        cue vet -c -d "${CUE_DEF}" github.com/gemaraproj/gemara@latest "$FILE"
-        echo "CUE validation passed for ${INPUT_FILE}"
+        FILE="$(realpath "${INPUT_FILE}")"
+        VALIDATE_ARGS=(-f "$FILE")
+        if [[ -n "${GRCLI_SPEC_DIR}" ]]; then
+          VALIDATE_ARGS+=(--spec "${GRCLI_SPEC_DIR}")
+        fi
+        echo "Validating: ${INPUT_FILE}"
+        grcli validate "${VALIDATE_ARGS[@]}"
+        echo "Validation passed for ${INPUT_FILE}"
 
     - name: Publish
       id: publish
       shell: bash
       env:
-        GEMARA_REGISTRY_PASSWORD: ${{ inputs.password }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working_directory }}
         INPUT_FILE: ${{ inputs.file }}
-        INPUT_VALIDATE: ${{ inputs.validate }}
+        INPUT_LICENSE: ${{ inputs.license }}
+        INPUT_TAG: ${{ inputs.tag }}
         INPUT_REGISTRY: ${{ inputs.registry }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
-        INPUT_TAG: ${{ inputs.tag }}
         INPUT_USERNAME: ${{ inputs.username }}
-        INPUT_BUNDLE_VERSION: ${{ inputs.bundle_version }}
-        ACTION_PATH: ${{ github.action_path }}
+        INPUT_PASSWORD: ${{ inputs.password }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_NO_SIGN: ${{ inputs.no_sign }}
+        # grcli reads GRCLI_URL from the environment for hub discovery.
+        GRCLI_URL: ${{ inputs.grcli_url }}
       run: |
         set -euo pipefail
         cd "${GITHUB_WORKSPACE}/${INPUT_WORKING_DIRECTORY}"
-        FILE="$(realpath "${INPUT_FILE}")"
-        VALIDATE_FLAG=""
-        if [[ "${INPUT_VALIDATE}" != "true" ]]; then
-          VALIDATE_FLAG="-validate=false"
+        RESOLVED_DIR="$(pwd -P)"
+        if [[ "${RESOLVED_DIR}" != "${GITHUB_WORKSPACE}"* ]]; then
+          echo "::error::working_directory resolves outside the workspace"
+          exit 1
         fi
-        go build -C "${ACTION_PATH}/cmd/grc" -o "${RUNNER_TEMP}/grc" .
-        "${RUNNER_TEMP}/grc" \
-          -registry="${INPUT_REGISTRY}" \
-          -repository="${INPUT_REPOSITORY}" \
-          -tag="${INPUT_TAG}" \
-          -file="$FILE" \
-          -username="${INPUT_USERNAME}" \
-          -bundle-version="${INPUT_BUNDLE_VERSION}" \
-          ${VALIDATE_FLAG}
+        FILE="$(realpath "${INPUT_FILE}")"
+
+        if [[ -n "${GRCLI_URL}" ]]; then
+          # ── Hub mode ──────────────────────────────────────────────
+          # grcli publish pushes through the hub: discovery, OIDC auth,
+          # in-process sigstore-go signing, hub sync. No ORAS push needed.
+          PUBLISH_ARGS=(-f "$FILE" --license "${INPUT_LICENSE}")
+
+          if [[ -n "${INPUT_REPOSITORY}" ]]; then
+            PUBLISH_ARGS+=(--repository "${INPUT_REPOSITORY}")
+          fi
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            PUBLISH_ARGS+=(--version "${INPUT_VERSION}")
+          fi
+          if [[ "${INPUT_NO_SIGN}" == "true" ]]; then
+            PUBLISH_ARGS+=(--no-sign)
+          fi
+
+          echo "Publishing (hub mode): ${INPUT_FILE}"
+          grcli publish "${PUBLISH_ARGS[@]}" 2>&1 | tee "${RUNNER_TEMP}/grcli-publish-out.txt"
+
+          # Extract digest from grcli output (prints "manifest digest: sha256:...").
+          DIGEST=$(grep -oE 'sha256:[a-f0-9]{64}' "${RUNNER_TEMP}/grcli-publish-out.txt" | head -1 || true)
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::Could not extract digest from grcli publish output"
+            cat "${RUNNER_TEMP}/grcli-publish-out.txt"
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "mode=hub" >> "${GITHUB_OUTPUT}"
+          echo "Published via hub (digest: ${DIGEST})"
+        else
+          # ── Direct mode ───────────────────────────────────────────
+          # grcli dry-run packs locally, ORAS pushes to the caller's registry.
+          LAYOUT_DIR="${RUNNER_TEMP}/grcli-bundle"
+          rm -rf "${LAYOUT_DIR}"
+
+          PUBLISH_ARGS=(-f "$FILE" --license "${INPUT_LICENSE}" --dry-run --no-sign --output "${LAYOUT_DIR}")
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            PUBLISH_ARGS+=(--version "${INPUT_VERSION}")
+          fi
+          echo "Packing bundle: ${INPUT_FILE}"
+          grcli publish "${PUBLISH_ARGS[@]}" 2>&1 | tee "${RUNNER_TEMP}/grcli-publish-out.txt"
+
+          # When --version is set the layout tag is known; otherwise extract
+          # it from grcli output (metadata.version).
+          # Assumption: grcli --dry-run prints a line containing "oci:<path>:<tag>"
+          # (e.g. "oci:/tmp/bundle:0.0.1"). If grcli changes its output format,
+          # this regex will fail and hit the error branch below.
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            LAYOUT_TAG="${INPUT_VERSION}"
+          else
+            LAYOUT_TAG=$(grep -oE 'oci:.*:([^ ]+)' "${RUNNER_TEMP}/grcli-publish-out.txt" | head -1 | sed 's/.*://')
+            if [[ -z "${LAYOUT_TAG}" ]]; then
+              echo "::error::Could not determine layout tag from grcli output"
+              cat "${RUNNER_TEMP}/grcli-publish-out.txt"
+              exit 1
+            fi
+          fi
+          echo "Layout tag: ${LAYOUT_TAG}"
+
+          # Push the OCI layout to the caller's registry via ORAS.
+          DEST_REF="${INPUT_REGISTRY}/${INPUT_REPOSITORY}:${INPUT_TAG}"
+          source_user="${INPUT_USERNAME:-${GITHUB_ACTOR:-oauth2}}"
+          echo "${INPUT_PASSWORD}" | oras login "${INPUT_REGISTRY}" -u "${source_user}" --password-stdin
+
+          echo "Pushing to ${DEST_REF}"
+          oras copy --from-oci-layout "${LAYOUT_DIR}:${LAYOUT_TAG}" "${DEST_REF}" 2>&1
+
+          # Resolve the pushed digest
+          DIGEST="$(oras resolve "${DEST_REF}" | tr -d '\r\n')"
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::Failed to resolve digest for ${DEST_REF}"
+            exit 1
+          fi
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
+          echo "mode=direct" >> "${GITHUB_OUTPUT}"
+          echo "Published ${DEST_REF} (digest: ${DIGEST})"
+        fi
 
     - name: Sign, verify, and optionally promote to destination registry
       id: finalize
       shell: bash
       env:
+        PUBLISH_MODE: ${{ steps.publish.outputs.mode }}
         REGISTRY: ${{ inputs.registry }}
         REPOSITORY: ${{ inputs.repository }}
         TAG: ${{ inputs.tag }}
@@ -277,6 +430,7 @@ runs:
         SOURCE_DIGEST: ${{ steps.publish.outputs.digest }}
         SIGN_SOURCE: ${{ inputs.sign_source }}
         VERIFY_SOURCE: ${{ inputs.verify_source }}
+        NO_SIGN: ${{ inputs.no_sign }}
         PROMOTE: ${{ inputs.promote_to_destination }}
         DEST_REGISTRY: ${{ inputs.destination_registry }}
         DEST_REPOSITORY: ${{ inputs.destination_repository }}
@@ -289,6 +443,8 @@ runs:
         ALLOWED_IDENTITY_REGEX: ${{ inputs.allowed_identity_regex }}
         DEFAULT_ALLOWED_IDENTITY_REGEX: ${{ format('^https://github.com/{0}/.github/workflows/', github.repository) }}
         COSIGN_CERTIFICATE_OIDC_ISSUER: ${{ inputs.cosign_certificate_oidc_issuer }}
+        # grcli reads GRCLI_URL from the environment for hub discovery.
+        GRCLI_URL: ${{ inputs.grcli_url }}
       run: |
         set -euo pipefail
         : "${GITHUB_OUTPUT:?}"
@@ -309,6 +465,13 @@ runs:
           return 1
         }
 
+        # Initialize default outputs
+        echo "destination_ref=" >> "${GITHUB_OUTPUT}"
+        echo "destination_digest=" >> "${GITHUB_OUTPUT}"
+        echo "trust_mode=${TRUST_MODE}" >> "${GITHUB_OUTPUT}"
+        echo "verified_source=false" >> "${GITHUB_OUTPUT}"
+        echo "verified_destination=false" >> "${GITHUB_OUTPUT}"
+
         if [[ -z "${SOURCE_DIGEST:-}" ]]; then
           echo "::error::No digest produced by publish step."
           exit 1
@@ -316,20 +479,11 @@ runs:
         if ! SOURCE_DIGEST=$(normalize_oci_digest "$SOURCE_DIGEST"); then
           exit 1
         fi
+        echo "source_digest=${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
 
         if [[ -z "${ALLOWED_IDENTITY_REGEX:-}" ]]; then
           ALLOWED_IDENTITY_REGEX="${DEFAULT_ALLOWED_IDENTITY_REGEX}"
         fi
-
-        SOURCE_REF_TAGGED="${REGISTRY}/${REPOSITORY}:${TAG}"
-        SOURCE_REF="${REGISTRY}/${REPOSITORY}@${SOURCE_DIGEST}"
-        echo "source_ref=${SOURCE_REF}" >> "${GITHUB_OUTPUT}"
-        echo "source_digest=${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
-        echo "destination_ref=" >> "${GITHUB_OUTPUT}"
-        echo "destination_digest=" >> "${GITHUB_OUTPUT}"
-        echo "trust_mode=${TRUST_MODE}" >> "${GITHUB_OUTPUT}"
-        echo "verified_source=false" >> "${GITHUB_OUTPUT}"
-        echo "verified_destination=false" >> "${GITHUB_OUTPUT}"
 
         verify_ref() {
           local ref="$1"
@@ -338,24 +492,45 @@ runs:
             --certificate-identity-regexp "${ALLOWED_IDENTITY_REGEX}" >/dev/null
         }
 
-        source_user="${USERNAME:-${GITHUB_ACTOR:-oauth2}}"
-        if [[ "${SIGN_SOURCE}" == "true" || "${VERIFY_SOURCE}" == "true" ]]; then
-          if [[ -n "${PASSWORD:-}" ]]; then
-            echo "${PASSWORD}" | docker login "${REGISTRY}" -u "${source_user}" --password-stdin
+        if [[ "${PUBLISH_MODE}" == "hub" ]]; then
+          # ── Hub mode finalize ─────────────────────────────────────
+          # grcli handled signing in-process. The source ref is
+          # hub-managed; we record what we know (repository + digest).
+          if [[ -n "${REPOSITORY}" ]]; then
+            echo "source_ref=${REPOSITORY}@${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::warning::Hub mode without repository input — source_ref is digest-only (@${SOURCE_DIGEST}) and not a pullable OCI reference."
+            echo "source_ref=@${SOURCE_DIGEST}" >> "${GITHUB_OUTPUT}"
+          fi
+        else
+          # ── Direct mode finalize ──────────────────────────────────
+          SOURCE_REF_TAGGED="${REGISTRY}/${REPOSITORY}:${TAG}"
+          SOURCE_REF="${REGISTRY}/${REPOSITORY}@${SOURCE_DIGEST}"
+          echo "source_ref=${SOURCE_REF}" >> "${GITHUB_OUTPUT}"
+
+          source_user="${USERNAME:-${GITHUB_ACTOR:-oauth2}}"
+
+          if [[ "${NO_SIGN}" != "true" ]]; then
+            if [[ "${SIGN_SOURCE}" == "true" || "${VERIFY_SOURCE}" == "true" ]]; then
+              if [[ -n "${PASSWORD:-}" ]]; then
+                echo "${PASSWORD}" | docker login "${REGISTRY}" -u "${source_user}" --password-stdin
+              fi
+            fi
+
+            if [[ "${SIGN_SOURCE}" == "true" ]]; then
+              echo "Signing source digest: ${SOURCE_REF}"
+              cosign sign -y "${SOURCE_REF}"
+            fi
+
+            if [[ "${VERIFY_SOURCE}" == "true" ]]; then
+              echo "Verifying source digest: ${SOURCE_REF}"
+              verify_ref "${SOURCE_REF}"
+              echo "verified_source=true" >> "${GITHUB_OUTPUT}"
+            fi
           fi
         fi
 
-        if [[ "${SIGN_SOURCE}" == "true" ]]; then
-          echo "Signing source digest: ${SOURCE_REF}"
-          cosign sign -y "${SOURCE_REF}"
-        fi
-
-        if [[ "${VERIFY_SOURCE}" == "true" ]]; then
-          echo "Verifying source digest: ${SOURCE_REF}"
-          verify_ref "${SOURCE_REF}"
-          echo "verified_source=true" >> "${GITHUB_OUTPUT}"
-        fi
-
+        # ── Promotion (both modes) ───────────────────────────────────
         if [[ "${PROMOTE}" != "true" ]]; then
           exit 0
         fi
@@ -364,21 +539,34 @@ runs:
           echo "::error::destination_repository, destination_username, and destination_password are required when promote_to_destination is true."
           exit 1
         fi
-        if [[ -z "${PASSWORD}" ]]; then
-          echo "::error::password is required to pull source image from registry during promotion."
-          exit 1
-        fi
-
         if [[ -z "${DEST_REGISTRY}" ]]; then
           echo "::error::destination_registry is required when promote_to_destination is true."
           exit 1
         fi
 
-        DEST_TAG_RESOLVED="${DEST_TAG:-${TAG}}"
+        # Determine the source reference for ORAS copy.
+        if [[ "${PUBLISH_MODE}" == "hub" ]]; then
+          # In hub mode, the source is on the hub-managed registry.
+          # Promotion requires the repository input to construct the source ref.
+          if [[ -z "${REPOSITORY}" ]]; then
+            echo "::error::repository input is required for promotion in hub mode (needed to construct source reference for ORAS copy)."
+            exit 1
+          fi
+          SOURCE_COPY_REF="${REPOSITORY}@${SOURCE_DIGEST}"
+        else
+          SOURCE_COPY_REF="${REGISTRY}/${REPOSITORY}:${TAG}"
+          # In direct mode, password is needed to pull from source during promotion.
+          if [[ -z "${PASSWORD}" ]]; then
+            echo "::error::password is required to pull source image from registry during promotion."
+            exit 1
+          fi
+          source_user="${USERNAME:-${GITHUB_ACTOR:-oauth2}}"
+          echo "${PASSWORD}" | oras login "${REGISTRY}" -u "${source_user}" --password-stdin
+        fi
+
+        DEST_TAG_RESOLVED="${DEST_TAG:-${TAG:-latest}}"
         DEST_REF_TAGGED="${DEST_REGISTRY}/${DEST_REPOSITORY}:${DEST_TAG_RESOLVED}"
 
-        src_user="${source_user}"
-        echo "${PASSWORD}" | oras login "${REGISTRY}" -u "${src_user}" --password-stdin
         echo "${DEST_PASSWORD}" | oras login "${DEST_REGISTRY}" -u "${DEST_USERNAME}" --password-stdin
         if [[ "${TRUST_MODE}" == "resign" || "${SIGN_DESTINATION}" == "true" || "${VERIFY_DESTINATION}" == "true" ]]; then
           echo "${DEST_PASSWORD}" | docker login "${DEST_REGISTRY}" -u "${DEST_USERNAME}" --password-stdin
@@ -386,13 +574,13 @@ runs:
 
         case "${TRUST_MODE}" in
           copy-only)
-            oras copy "${SOURCE_REF_TAGGED}" "${DEST_REF_TAGGED}"
+            oras copy "${SOURCE_COPY_REF}" "${DEST_REF_TAGGED}"
             ;;
           copy-referrers)
-            oras copy --recursive "${SOURCE_REF_TAGGED}" "${DEST_REF_TAGGED}"
+            oras copy --recursive "${SOURCE_COPY_REF}" "${DEST_REF_TAGGED}"
             ;;
           resign)
-            oras copy "${SOURCE_REF_TAGGED}" "${DEST_REF_TAGGED}"
+            oras copy "${SOURCE_COPY_REF}" "${DEST_REF_TAGGED}"
             ;;
           *)
             echo "::error::Unsupported trust_mode: ${TRUST_MODE} (copy-only, copy-referrers, resign)"

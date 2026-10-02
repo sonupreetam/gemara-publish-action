@@ -1,0 +1,240 @@
+name: Action Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  end-to-end:
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Publish to local registry
+        id: publish
+        uses: ./
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          registry: localhost:5000
+          repository: test/catalog
+          tag: latest
+          username: test
+          password: test
+          validate: "false"
+          sign_source: "false"
+          verify_source: "false"
+
+      - name: Verify outputs
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          SOURCE_REF: ${{ steps.publish.outputs.source_ref }}
+          SOURCE_DIGEST: ${{ steps.publish.outputs.source_digest }}
+          TRUST_MODE: ${{ steps.publish.outputs.trust_mode }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" || ! "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Invalid digest: ${DIGEST}"
+            exit 1
+          fi
+          if [[ "${SOURCE_REF}" != "localhost:5000/test/catalog@${DIGEST}" ]]; then
+            echo "::error::source_ref mismatch: got ${SOURCE_REF}"
+            exit 1
+          fi
+          if [[ -z "${SOURCE_DIGEST}" || "${SOURCE_DIGEST}" != "${DIGEST}" ]]; then
+            echo "::error::source_digest mismatch or empty: got ${SOURCE_DIGEST}, expected ${DIGEST}"
+            exit 1
+          fi
+          if [[ "${TRUST_MODE}" != "resign" ]]; then
+            echo "::error::Expected trust_mode=resign, got ${TRUST_MODE}"
+            exit 1
+          fi
+          echo "All outputs verified"
+
+      - name: Verify manifest on registry
+        run: |
+          set -euo pipefail
+          oras manifest fetch localhost:5000/test/catalog:latest | python3 -c "
+          import sys, json
+          m = json.load(sys.stdin)
+          assert m['artifactType'] == 'application/vnd.gemara.bundle.v1', f'bad artifactType: {m[\"artifactType\"]}'
+          assert m['config']['mediaType'] == 'application/vnd.gemara.manifest.v1+json', 'bad config mediaType'
+          assert len(m['layers']) > 0, 'no layers'
+          assert m['layers'][0]['mediaType'] == 'application/vnd.gemara.artifact.v1+yaml', 'bad layer mediaType'
+          assert 'Apache-2.0' in m.get('annotations', {}).get('org.opencontainers.image.licenses', ''), 'missing license'
+          print('Manifest structure verified')
+          "
+
+  version-flag:
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Publish versionless catalog with version input
+        id: publish
+        uses: ./
+        with:
+          file: testdata/minimal-catalog-no-version.yaml
+          license: Apache-2.0
+          version: "0.1.0-test"
+          registry: localhost:5000
+          repository: test/catalog-versioned
+          tag: v0.1.0-test
+          username: test
+          password: test
+          validate: "false"
+          sign_source: "false"
+          verify_source: "false"
+
+      - name: Verify outputs
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          SOURCE_REF: ${{ steps.publish.outputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DIGEST}" || ! "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Invalid digest: ${DIGEST}"
+            exit 1
+          fi
+          if [[ "${SOURCE_REF}" != "localhost:5000/test/catalog-versioned@${DIGEST}" ]]; then
+            echo "::error::source_ref mismatch: got ${SOURCE_REF}"
+            exit 1
+          fi
+          echo "Version-flag outputs verified"
+
+      - name: Verify manifest has correct version in config
+        run: |
+          set -euo pipefail
+          oras manifest fetch localhost:5000/test/catalog-versioned:v0.1.0-test | python3 -c "
+          import sys, json
+          m = json.load(sys.stdin)
+          assert m['artifactType'] == 'application/vnd.gemara.bundle.v1', f'bad artifactType: {m[\"artifactType\"]}'
+          assert len(m['layers']) > 0, 'no layers'
+          assert 'Apache-2.0' in m.get('annotations', {}).get('org.opencontainers.image.licenses', ''), 'missing license'
+          # Verify the version was stamped: fetch the config blob and check
+          config_digest = m['config']['digest']
+          print(f'Config digest: {config_digest}')
+          print('Version-flag manifest verified')
+          "
+          # Fetch and verify the config blob contains the stamped version
+          CONFIG_DIGEST=$(oras manifest fetch localhost:5000/test/catalog-versioned:v0.1.0-test | python3 -c "import sys,json; print(json.load(sys.stdin)['config']['digest'])")
+          oras blob fetch "localhost:5000/test/catalog-versioned@${CONFIG_DIGEST}" --output - | python3 -c "
+          import sys, json
+          config = json.load(sys.stdin)
+          version = config.get('version', config.get('metadata', {}).get('version', ''))
+          assert '0.1.0-test' in str(config), f'version 0.1.0-test not found in config: {json.dumps(config, indent=2)}'
+          print(f'Version stamp verified in config')
+          "
+
+  input-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test missing license (should fail)
+        id: missing-license
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: ""
+          repository: test/repo
+          tag: latest
+          password: dummy
+
+      - name: Assert missing license was rejected
+        if: always()
+        run: |
+          if [[ "${{ steps.missing-license.outcome }}" != "failure" ]]; then
+            echo "::error::Expected action to fail when license is empty, got: ${{ steps.missing-license.outcome }}"
+            exit 1
+          fi
+          echo "Correctly rejected missing license"
+
+      - name: Test missing password (should fail)
+        id: missing-password
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          repository: test/repo
+          tag: latest
+          password: ""
+
+      - name: Assert missing password was rejected
+        if: always()
+        run: |
+          if [[ "${{ steps.missing-password.outcome }}" != "failure" ]]; then
+            echo "::error::Expected action to fail when password is empty, got: ${{ steps.missing-password.outcome }}"
+            exit 1
+          fi
+          echo "Correctly rejected missing password"
+
+      - name: Test invalid trust_mode (should fail)
+        id: bad-trust
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          repository: test/repo
+          tag: latest
+          password: dummy
+          trust_mode: "invalid"
+
+      - name: Assert invalid trust_mode was rejected
+        if: always()
+        run: |
+          if [[ "${{ steps.bad-trust.outcome }}" != "failure" ]]; then
+            echo "::error::Expected action to fail with invalid trust_mode, got: ${{ steps.bad-trust.outcome }}"
+            exit 1
+          fi
+          echo "Correctly rejected invalid trust_mode"
+
+      - name: Test promote without destination (should fail)
+        id: promote-no-dest
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          repository: test/repo
+          tag: latest
+          password: dummy
+          promote_to_destination: "true"
+          destination_registry: ""
+          destination_repository: ""
+          destination_username: ""
+          destination_password: ""
+
+      - name: Assert promote without destination was rejected
+        if: always()
+        run: |
+          if [[ "${{ steps.promote-no-dest.outcome }}" != "failure" ]]; then
+            echo "::error::Expected action to fail when promote_to_destination=true without destination fields, got: ${{ steps.promote-no-dest.outcome }}"
+            exit 1
+          fi
+          echo "Correctly rejected promote without destination"

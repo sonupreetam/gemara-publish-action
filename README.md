@@ -1,123 +1,205 @@
-# gemara-registry-cli
+# gemara-publish-action
 
-GitHub Action for Gemara OCI publish and trust orchestration. Uses the
-[go-gemara](https://github.com/gemaraproj/go-gemara) bundle SDK (`Assemble` + `Pack`)
-and ORAS to push a root Gemara YAML (Policy, Catalog, or Guidance) as an OCI bundle.
+GitHub Action for Gemara OCI publish and trust orchestration. Uses
+[grcli](https://github.com/gemaraproj/grcli) for bundle packing (assembly,
+SLSA provenance, license validation).
+
+## Two publish modes
+
+| | Direct mode (default) | Hub mode (`grcli_url` set) |
+|---|---|---|
+| **Push** | `grcli --dry-run` + ORAS to any OCI registry | `grcli publish` through grc.store hub |
+| **Auth** | `username` + `password` | OIDC (`permissions: id-token: write`) |
+| **Signing** | External cosign (keyless) | In-process sigstore-go |
+| **Provenance** | SLSA provenance in bundle | SLSA provenance in bundle |
+| **Hub indexing** | No | Yes |
+
+Both modes support optional validation, optional promotion to a second
+registry, and structured outputs.
+
+### Direct mode phases
 
 | Phase | What it does |
 |--------|----------------|
-| **1 — Publish** | Assemble dependencies, pack into OCI bundle, push to **source** registry via go-gemara + ORAS. |
-| **2 — Trust (source)** | Optional keyless **cosign** sign/verify on the **source** digest. |
-| **3 — Promote (optional)** | Optional **ORAS** copy to a **destination** registry with `trust_mode`. |
-| **4 — Trust (destination)** | Optional sign/verify on the **destination** digest when promotion and flags request it. |
+| **1 — Validate** | Optional `grcli validate` (`cue vet` against Gemara CUE schemas). |
+| **2 — Pack** | `grcli publish --dry-run`: assemble, pack OCI bundle with SLSA provenance. |
+| **3 — Push** | `oras copy` the OCI layout to the caller's registry with the caller's tag. |
+| **4 — Trust** | Optional keyless cosign sign/verify on the source digest. |
+| **5 — Promote** | Optional ORAS copy to a destination registry with `trust_mode`. |
 
-**Outputs:** `digest` / `source_digest` and `source_ref` are always **normalized** to the form `sha256:<64 lowercase hex>` / `registry/repo@sha256:…` for stable downstream use.
+### Hub mode phases
 
-**Who owns the contract:** [go-gemara](https://github.com/gemaraproj/go-gemara) owns bundle media types, manifest shape, and Pack/Assemble. This action does not.
+| Phase | What it does |
+|--------|----------------|
+| **1 — Validate** | Optional `grcli validate`. |
+| **2 — Publish** | `grcli publish`: assemble, pack, push to hub-managed registry, sign in-process, hub sync. |
+| **3 — Promote** | Optional ORAS copy to a destination registry with `trust_mode`. |
+
+**Outputs:** `digest` / `source_digest` and `source_ref` are **normalized** to `sha256:<64 lowercase hex>` / `registry/repo@sha256:...`.
+
+**Who owns the contract:** [grcli](https://github.com/gemaraproj/grcli) and
+[go-gemara](https://github.com/gemaraproj/go-gemara) own bundle media types,
+manifest shape, and Pack/Assemble. This action owns transport and trust.
+
+### Responsibility split
+
+| Concern | Owner | Notes |
+|---------|-------|-------|
+| Bundle assembly, packing, manifest shape | go-gemara SDK (via grcli) | `grcli publish --dry-run` (direct) or `grcli publish` (hub) |
+| SLSA provenance | grcli | Embedded in bundle manifest config |
+| License validation | grcli | SPDX canonicalization before packing |
+| CUE schema validation | grcli | `grcli validate` wraps `cue vet` |
+| Registry transport (push) | This action (ORAS) | Direct mode only; hub mode uses grcli |
+| Source signing / verification | This action (cosign) | Direct mode; hub mode signs in-process |
+| Cross-registry promotion | This action (ORAS + cosign) | Copy + optional resign |
+| CI orchestration | This action (`action.yml`) | Input validation, step sequencing, outputs |
+
+Design decisions are recorded in [docs/adr/](docs/adr/).
 
 ### Boundaries (what is *not* in this action)
 
-- **SLSA provenance**, **SBOM**, and **vulnerability** attestations are **out of scope** here—add them in **separate job steps** or a caller workflow *after* publish, if your policy needs them.
-- **Branch / environment / approval** gates are **not** enforced inside the composite. Use **caller workflow** `if:` and GitHub **Environments** (see [Caller patterns](#caller-patterns) below).
-- Composites only receive **string** inputs. Boolean-like flags are the literal strings **`"true"`** and **`"false"`** (see table below).
-
-| Typical "boolean" input | Set to |
-|------------------------|--------|
-| `sign_source`, `verify_source`, `promote_to_destination`, `sign_destination`, `verify_destination` | `"true"` or `"false"` |
-
-### Caller patterns
-
-Reusable **workflows** can set `concurrency:`, `environment:`, and `if: github.ref_protected` on a **job**. A **composite** cannot—so apply these on the **job** (or parent workflow) that invokes this action:
-
-- **Concurrency:** add a `concurrency:` group on the publish job (for example keyed by `repository` + `tag` or by digest) so overlapping releases do not clobber one another.
-- **Protected branches / tags:** use `if: github.ref_protected` (or your org's rules) on the same job for production releases.
-- **Environments (manual approval):** set `environment: production` (or similar) on the **job** so the step that uses this action runs under environment protection rules, matching how org-infra sign workflows use `sign_environment`.
-
-## Promotion and trust
-
-- Set `promote_to_destination: "true"` and **`destination_*`** inputs to copy the published tag to a
-  second registry (for example GHCR -> Quay or GHCR -> another org registry).
-- Standard path defaults (no extra inputs needed):
-  - `trust_mode: resign`
-  - `sign_destination: "true"`
-  - `verify_destination: "true"`
-- Optional compatibility trust modes remain available:
-  - `copy-only`: copy payload tag only.
-  - `copy-referrers`: recursive copy to include referrer graph when registry support is available.
-- Source and destination verification default to issuer
-  `https://token.actions.githubusercontent.com` (override with `cosign_certificate_oidc_issuer` when
-  your signing environment differs).
-- This repository's CI validates source-publish and source-signing behavior. Cross-registry
-  promotion verification is authoritative in caller repositories where destination credentials
-  and release controls live.
+- **SLSA provenance** is generated by grcli during packing — this action does not add its own.
+- **SBOM** and **vulnerability** attestations are **out of scope**.
+- **Branch / environment / approval** gates belong on the **caller workflow**.
+- Composites only receive **string** inputs. Boolean-like flags are `"true"` / `"false"`.
 
 ## Key inputs
 
-| Input | Description |
-|-------|-------------|
-| `file` | Root Gemara artifact YAML (Policy, Catalog, or Guidance). **Required.** |
-| `registry`, `repository`, `tag` | Source destination for publish. |
-| `username`, `password` | Source registry auth. |
-| `validate` | Run `gemara.Load` schema validation before assemble (`"true"` / `"false"`). |
-| `bundle_version` | Bundle format version (default `"1"`). |
-| `working_directory` | Working directory relative to repo root for resolving `file`. |
-| `sign_source`, `verify_source` | Source signature controls. |
-| `promote_to_destination` | Enable promotion to `destination_*`. |
-| `destination_registry`, `destination_repository`, `destination_tag`, `destination_username`, `destination_password` | Destination registry host, path without host, optional tag override, credentials. |
-| `cosign_certificate_oidc_issuer` | Expected OIDC issuer for `cosign verify` (defaults to GitHub Actions). |
-| `trust_mode` | `copy-only`, `copy-referrers`, or `resign`. |
-| `verify_destination` | Destination signature verification control. |
-| `allowed_identity_regex` | Optional cosign identity regex override. |
+| Input | Description | Mode |
+|-------|-------------|------|
+| `file` | Root Gemara artifact YAML. **Required.** | Both |
+| `license` | SPDX license expression (e.g. `Apache-2.0`). **Required.** | Both |
+| `version` | Artifact version stamped into `metadata.version` before packing (optional). | Both |
+| `grcli_url` | Hub base URL. When set, enables hub mode. | Hub |
+| `no_sign` | Skip signing (`"true"` / `"false"`). | Both |
+| `registry` | Registry host (e.g. `ghcr.io`). | Direct |
+| `repository` | Required in direct mode. Optional override in hub mode. | Both |
+| `tag` | Tag to push. Required in direct mode. | Direct |
+| `username`, `password` | Source registry auth. | Direct |
+| `validate` | Run `grcli validate` before publish. | Both |
+| `gemara_spec_dir` | Path to local Gemara spec checkout for validation. | Both |
+| `grcli_version` | grcli release tag to install (default `v0.2.0`). | Both |
+| `working_directory` | Working directory for resolving the `file` input (default `.`). | Both |
+| `sign_source`, `verify_source` | Source signature controls. | Direct |
+| `sign_destination`, `verify_destination` | Destination signature controls. | Both |
+| `promote_to_destination` | Enable promotion to `destination_*`. | Both |
+| `destination_*` | Destination coordinates and credentials. | Both |
+| `trust_mode` | `copy-only`, `copy-referrers`, or `resign`. | Both |
+| `cosign_version` | Cosign release version (default `v2.4.0`). | Both |
+| `cosign_certificate_oidc_issuer` | OIDC issuer for cosign verify (default: GitHub Actions). | Both |
+| `allowed_identity_regex` | Regex for certificate identity in cosign verify. | Both |
+| `oras_version` | ORAS CLI version (default `1.2.0`). | Both |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `digest` / `source_digest` | Source manifest digest, **always** `sha256:` + 64 hex (lowercase). |
-| `source_ref` | `registry/repository@sha256:…` (digest normalized as above). |
+| `digest` / `source_digest` | Source manifest digest, `sha256:` + 64 hex. |
+| `source_ref` | `registry/repository@sha256:...` (direct) or `repository@sha256:...` (hub). |
 | `destination_digest` | Destination digest after promotion. |
 | `destination_ref` | Destination image reference with digest. |
-| `verified_source` | `true` if source verify passed. |
-| `verified_destination` | `true` if destination verify passed. |
+| `verified_source` | `true` if source verify passed, `skipped` if not attempted. |
+| `verified_destination` | `true` if destination verify passed, `skipped` if not attempted. |
 | `trust_mode` | Effective trust mode used. |
 
-## Minimal caller example
+## Caller examples
+
+### Direct mode — push to GHCR
 
 ```yaml
 permissions:
   contents: read
   packages: write
-  id-token: write
+  id-token: write   # needed for cosign keyless signing
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4   # pin to a commit SHA in production
       - id: publish
-        uses: gemaraproj/gemara-registry-cli@<pinned-sha>
+        uses: gemaraproj/gemara-publish-action@<pinned-sha>
         with:
           registry: ghcr.io
           repository: ${{ github.repository }}
-          tag: ${{ github.ref_name }}
+          tag: latest
           file: governance/policies/my-policy.yaml
+          license: Apache-2.0
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          promote_to_destination: "true"
-          destination_registry: quay.io
-          destination_repository: myorg/my-policies
-          destination_username: ${{ secrets.QUAY_ROBOT_USERNAME }}
-          destination_password: ${{ secrets.QUAY_ROBOT_TOKEN }}
 ```
+
+### Hub mode — publish through grc.store
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # grcli mints a GitHub Actions OIDC token
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4   # pin to a commit SHA in production
+      - id: publish
+        uses: gemaraproj/gemara-publish-action@<pinned-sha>
+        with:
+          file: governance/policies/my-policy.yaml
+          license: Apache-2.0
+          grcli_url: https://hub.grc.store
+```
+
+No `registry`, `username`, or `password` needed — grcli authenticates via
+OIDC and pushes to the hub-managed registry. Signing is in-process via
+sigstore-go.
 
 ## Repository layout
 
-- **`cmd/grc/`** — Gemara Registry CLI (`grc`), a small Go program used by the action. It wires `bundle.Assemble` / `bundle.Pack` and `oras.Copy`; SDK semantics stay in **go-gemara** `v0.4.0+`.
-- **`testdata/`** — minimal Gemara catalog for CI validation and assembly tests.
+- **`action.yml`** — Composite action definition (dual-mode: direct + hub).
+- **`scripts/`** — Shell logic for publish and finalize steps (`lib.sh`, `publish.sh`, `finalize.sh`).
+- **`testdata/`** — Minimal Gemara catalog fixtures and legacy bundle OCI layout for CI tests.
+- **`docs/`** — Architecture documentation and ADRs.
+- **`specs/`** — Feature specifications.
+
+## Migrating from the embedded `grc` CLI
+
+This release replaces the embedded Go CLI (`cmd/grc/`) with
+[grcli](https://github.com/gemaraproj/grcli). Existing callers need one
+change:
+
+```diff
+  uses: gemaraproj/gemara-publish-action@<new-sha>
+  with:
++   license: Apache-2.0          # new required input (SPDX expression)
+    file: governance/policies/my-policy.yaml
+    registry: ghcr.io
+    repository: ${{ github.repository }}
+    tag: latest
+```
+
+### What changed
+
+| Before | After | Action needed |
+|--------|-------|---------------|
+| No `license` input | `license` **required** | Add `license: <SPDX>` to every caller |
+| `bundle_version` input accepted | Deprecated (ignored, will be removed) | Remove `bundle_version` from callers |
+| `password` always required | Required in direct mode only | No change for direct-mode callers |
+| `verified_source` = `false` when not attempted | `verified_source` = `skipped` when not attempted | Update `if:` guards that check `== 'false'` |
+| `verified_destination` = `false` when not attempted | `verified_destination` = `skipped` when not attempted | Update `if:` guards that check `== 'false'` |
+| Go toolchain required at runtime | grcli pre-built binary | None (faster builds) |
+| No SLSA provenance | SLSA provenance embedded by grcli | None (additive) |
+| No license annotation | `org.opencontainers.image.licenses` set | None (additive) |
+
+### Unchanged
+
+All direct-mode inputs (`registry`, `tag`, `username`, `password`,
+`sign_source`, `verify_source`), promotion inputs (`promote_to_destination`,
+`destination_*`, `trust_mode`), and output keys (`digest`, `source_ref`,
+`source_digest`, `destination_ref`, `destination_digest`) work the same way.
 
 ## Pinning
 
-Use a full commit SHA for production callers. Avoid floating refs.
+Use a full commit SHA for production callers. Pin `grcli_version` to a release tag.
 
 ## License
 

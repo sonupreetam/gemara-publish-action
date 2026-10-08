@@ -14,41 +14,151 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: YAML syntax (action.yml)
         run: ruby -ryaml -e "YAML.load_file('action.yml'); puts 'action.yml OK'"
 
-      - name: Go (cmd/grc)
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - name: Install grcli
+        uses: gemaraproj/grcli/.github/actions/install@fd1da672bae6d3bca96d2f8cd46ee89369113707 # v0.2.0
         with:
-          go-version-file: cmd/grc/go.mod
-          cache-dependency-path: cmd/grc/go.sum
+          version: v0.2.0
 
-      - name: Build grc
-        run: go build -C cmd/grc -o "${RUNNER_TEMP}/grc" .
+      - name: Setup CUE
+        uses: cue-lang/setup-cue@a93fa358375740cd8b0078f76355512b9208acb1 # v1.0.1
+        with:
+          version: "v0.15.1"
 
-      - name: Validate + assemble + pack (dry run)
+      - name: Checkout Gemara spec
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gemaraproj/gemara
+          path: gemara-spec
+          persist-credentials: false
+
+      - name: Validate testdata
         run: |
           set -euo pipefail
-          cd testdata
-          GEMARA_REGISTRY_PASSWORD=ci-dummy "${RUNNER_TEMP}/grc" \
-            -registry=localhost:5000 \
-            -repository=ci/test \
-            -tag=ci \
-            -file=minimal-catalog.yaml \
-            -username=ci \
-            -validate=true 2>&1 | tee /tmp/publish-out.txt || true
-          if grep -q "^assemble:" /tmp/publish-out.txt; then
-            echo "::error::Assemble failed"
+          grcli validate -f testdata/minimal-catalog.yaml --spec "$GITHUB_WORKSPACE/gemara-spec"
+          echo "Validation passed"
+
+      - name: Publish dry run and verify OCI layout
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="${RUNNER_TEMP}/grcli-dry-run"
+          grcli publish -f testdata/minimal-catalog.yaml \
+            --license Apache-2.0 \
+            --dry-run \
+            --no-sign \
+            --output "${BUNDLE_DIR}" 2>&1 | tee "${RUNNER_TEMP}/publish-out.txt"
+          test -d "${BUNDLE_DIR}" || { echo "::error::Dry-run output directory not created"; exit 1; }
+          test -f "${BUNDLE_DIR}/oci-layout" || { echo "::error::Missing oci-layout"; exit 1; }
+          test -f "${BUNDLE_DIR}/index.json" || { echo "::error::Missing index.json"; exit 1; }
+          test -d "${BUNDLE_DIR}/blobs" || { echo "::error::Missing blobs directory"; exit 1; }
+          grep -qE 'sha256:[a-f0-9]{64}' "${RUNNER_TEMP}/publish-out.txt" || { echo "::error::No sha256 digest in output"; exit 1; }
+          echo "OCI layout structure and digest verified"
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run lib.sh unit tests
+        run: bash scripts/test_lib.sh
+
+  migration-check:
+    runs-on: ubuntu-latest
+    # Tests grcli's ability to consume legacy bundles (pre-grcli format)
+    # via unpack, cat, and ORAS registry round-trip.
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install grcli
+        uses: gemaraproj/grcli/.github/actions/install@fd1da672bae6d3bca96d2f8cd46ee89369113707 # v0.2.0
+        with:
+          version: v0.2.0
+
+      - name: Install ORAS CLI
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+        with:
+          version: "1.2.0"
+
+      - name: Test grcli unpack on legacy bundle
+        run: |
+          set -euo pipefail
+          grcli unpack --source testdata/legacy-bundle --version 0.0.1 --no-verify \
+            --output "${RUNNER_TEMP}/legacy-unpack"
+          echo "grcli unpack succeeded on legacy bundle ✓"
+
+      - name: Verify unpacked content matches fixture
+        run: |
+          set -euo pipefail
+          test -f "${RUNNER_TEMP}/legacy-unpack/minimal-catalog.yaml" || {
+            echo "::error::Expected minimal-catalog.yaml in unpacked output"
+            find "${RUNNER_TEMP}/legacy-unpack" -type f
+            exit 1
+          }
+          diff "${RUNNER_TEMP}/legacy-unpack/minimal-catalog.yaml" testdata/minimal-catalog.yaml
+          echo "Unpacked content matches fixture ✓"
+
+      - name: Test grcli cat on legacy bundle
+        run: |
+          set -euo pipefail
+          grcli cat --source testdata/legacy-bundle --version 0.0.1 \
+            | tee "${RUNNER_TEMP}/cat-out.txt"
+          if ! grep -q 'gemara' "${RUNNER_TEMP}/cat-out.txt"; then
+            echo "::error::Expected cat output to contain Gemara YAML content"
             exit 1
           fi
-          if grep -q "^validate:" /tmp/publish-out.txt; then
-            echo "::error::Validation failed"
-            exit 1
-          fi
-          if grep -q "^pack:" /tmp/publish-out.txt; then
-            echo "::error::Pack failed"
-            exit 1
-          fi
-          echo "Assemble + pack succeeded (push expected to fail — no registry)"
+          echo "grcli cat output contains expected content ✓"
+
+      - name: Push legacy fixture to local registry
+        run: |
+          set -euo pipefail
+          oras copy --from-oci-layout testdata/legacy-bundle:0.0.1 \
+            localhost:5000/test/legacy-bundle:0.0.1
+          echo "Legacy fixture pushed to local registry ✓"
+
+      - name: Verify manifest structure on registry
+        run: |
+          set -euo pipefail
+          oras manifest fetch localhost:5000/test/legacy-bundle:0.0.1 | python3 -c "
+          import sys, json
+          m = json.load(sys.stdin)
+          assert m['artifactType'] == 'application/vnd.gemara.bundle.v1', f'bad artifactType: {m[\"artifactType\"]}'
+          assert m['config']['mediaType'] == 'application/vnd.gemara.manifest.v1+json', 'bad config mediaType'
+          assert len(m['layers']) > 0, 'no layers'
+          assert m['layers'][0]['mediaType'] == 'application/vnd.gemara.artifact.v1+yaml', 'bad layer mediaType'
+          assert 'org.opencontainers.image.licenses' not in m.get('annotations', {}), 'legacy bundle should not have license annotation'
+          print('Legacy bundle manifest structure verified on registry ✓')
+          "
+
+      - name: Verify content round-trip via registry
+        run: |
+          set -euo pipefail
+          ROUND_TRIP_DIR="${RUNNER_TEMP}/round-trip"
+          oras copy localhost:5000/test/legacy-bundle:0.0.1 \
+            --to-oci-layout "${ROUND_TRIP_DIR}:0.0.1"
+          MANIFEST_DIGEST=$(python3 -c "
+          import json
+          idx = json.load(open('${ROUND_TRIP_DIR}/index.json'))
+          print(idx['manifests'][0]['digest'].replace('sha256:', ''))
+          ")
+          LAYER_DIGEST=$(python3 -c "
+          import json
+          mf = json.load(open('${ROUND_TRIP_DIR}/blobs/sha256/${MANIFEST_DIGEST}'))
+          print(mf['layers'][0]['digest'].replace('sha256:', ''))
+          ")
+          diff "${ROUND_TRIP_DIR}/blobs/sha256/${LAYER_DIGEST}" testdata/minimal-catalog.yaml
+          echo "Content round-trip through registry verified ✓"

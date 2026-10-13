@@ -38,7 +38,7 @@ Go CLI with grcli.
 
 ### Hub mode (`grcli_url` set)
 
-1. `grcli publish -f <file> --license <license>` pushes through grc.store:
+1. `grcli publish -f <file> --license <license>` pushes through provided Gemara-compatible hub implementation:
    hub discovery, OIDC auth, in-process sigstore-go signing, hub sync.
 2. No ORAS push, no cosign — grcli handles transport and signing internally.
 

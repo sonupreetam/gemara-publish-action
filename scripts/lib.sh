@@ -28,10 +28,12 @@ normalize_oci_digest() {
 #   Expects: INPUT_WORKING_DIRECTORY and GITHUB_WORKSPACE to be set.
 #   Side effect: changes directory to the validated path.
 validate_working_directory() {
-  cd "${GITHUB_WORKSPACE}/${INPUT_WORKING_DIRECTORY}" || exit 1
+  local workspace_dir
+  workspace_dir="$(cd -- "${GITHUB_WORKSPACE}" && pwd -P)" || exit 1
+  cd -- "${workspace_dir%/}/${INPUT_WORKING_DIRECTORY}" || exit 1
   local resolved_dir
   resolved_dir="$(pwd -P)"
-  if [[ "${resolved_dir}" != "${GITHUB_WORKSPACE}"* ]]; then
+  if [[ "${resolved_dir}" != "${workspace_dir}" && "${resolved_dir}" != "${workspace_dir%/}/"* ]]; then
     echo "::error::working_directory resolves outside the workspace"
     exit 1
   fi

@@ -61,9 +61,12 @@ echo "=== validate_working_directory ==="
 
 # Set up a temp workspace to test traversal.
 # Resolve with pwd -P so macOS /private prefix matches what the function sees.
-TMPWS=$(mktemp -d)
-TMPWS=$(cd "${TMPWS}" && pwd -P)
+TMPCONTAINER=$(mktemp -d)
+TMPCONTAINER=$(cd "${TMPCONTAINER}" && pwd -P)
+trap 'rm -rf "${TMPCONTAINER}"' EXIT
+TMPWS="${TMPCONTAINER}/workspace"
 mkdir -p "${TMPWS}/subdir"
+mkdir "${TMPCONTAINER}/workspace-sibling"
 
 # Valid: stays inside workspace
 export GITHUB_WORKSPACE="${TMPWS}"
@@ -93,7 +96,39 @@ else
   assert_eq "symlink escape rejected" "rejected" "rejected"
 fi
 
-rm -rf "${TMPWS}"
+# A sibling can share every byte of the workspace prefix and still be outside.
+export INPUT_WORKING_DIRECTORY="../workspace-sibling"
+if (validate_working_directory 2>/dev/null); then
+  assert_eq "same-prefix sibling traversal rejected" "should have failed" "succeeded"
+else
+  assert_eq "same-prefix sibling traversal rejected" "rejected" "rejected"
+fi
+
+ln -s "${TMPCONTAINER}/workspace-sibling" "${TMPWS}/prefix-escape-link"
+export INPUT_WORKING_DIRECTORY="prefix-escape-link"
+if (validate_working_directory 2>/dev/null); then
+  assert_eq "symlink to same-prefix sibling rejected" "should have failed" "succeeded"
+else
+  assert_eq "symlink to same-prefix sibling rejected" "rejected" "rejected"
+fi
+
+# Resolving an in-workspace symlink preserves the same directory boundary.
+ln -s "${TMPWS}/subdir" "${TMPWS}/inside-link"
+export INPUT_WORKING_DIRECTORY="inside-link"
+(validate_working_directory 2>/dev/null)
+assert_eq "in-workspace symlink accepted" "0" "$?"
+
+# Canonicalise the trusted root too, so spelling it through a symlink or a
+# trailing separator cannot turn the same physical workspace into an escape.
+ln -s "${TMPWS}" "${TMPCONTAINER}/workspace-link"
+export GITHUB_WORKSPACE="${TMPCONTAINER}/workspace-link"
+export INPUT_WORKING_DIRECTORY="."
+(validate_working_directory 2>/dev/null)
+assert_eq "symlinked workspace accepted" "0" "$?"
+
+export GITHUB_WORKSPACE="${TMPWS}/"
+(validate_working_directory 2>/dev/null)
+assert_eq "workspace with trailing separator accepted" "0" "$?"
 
 echo ""
 echo "=== Results ==="

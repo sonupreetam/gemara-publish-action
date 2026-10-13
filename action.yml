@@ -4,7 +4,7 @@
 #   Direct (default): grcli dry-run packs locally, ORAS pushes to the caller's
 #     registry, cosign signs/verifies externally. Caller supplies registry +
 #     username + password.
-#   Hub: grcli publish pushes through grc.store (hub discovery, OIDC auth,
+#   Hub: grcli publish pushes through a Gemara-compatible hub (discovery, OIDC auth,
 #     in-process sigstore-go signing). Caller sets grcli_url; no registry
 #     credentials needed for the source publish.
 #
@@ -16,7 +16,7 @@ name: Publish Gemara OCI bundle
 description: >-
   Assemble a root Gemara YAML into an OCI bundle via grcli. In direct mode
   (default), push to any OCI registry via ORAS and sign with cosign. In hub
-  mode (grcli_url set), publish through grc.store with in-process signing.
+  mode (grcli_url set), publish through a Gemara-compatible hub with in-process signing.
   Optionally promote to a second registry in either mode.
   Boolean flags use the strings "true" / "false".
 

@@ -7,7 +7,7 @@ This specification describes the **composite** GitHub Action shipped from this r
 
 - **Direct mode** (default): pack via `grcli --dry-run`, push to any OCI registry via
   ORAS, sign/verify with cosign.
-- **Hub mode** (`grcli_url` set): publish through grc.store with in-process signing.
+- **Hub mode** (`grcli_url` set): publish through a Gemara-compatible hub with in-process signing.
 
 Both modes support optional validation, optional promotion to a second registry, and
 structured outputs.
@@ -44,7 +44,7 @@ CI callers need a **small, auditable** Action that:
 A maintainer calls the action once with publish settings and trust settings. In direct
 mode, the action packs the bundle via `grcli publish --dry-run`, pushes to the caller's
 registry via ORAS, and signs/verifies the source digest with cosign. In hub mode, the
-action calls `grcli publish` which handles push and signing through grc.store. Both modes
+action calls `grcli publish` which handles push and signing through the configured hub. Both modes
 optionally promote to a destination registry and return source/destination outputs.
 
 **Test coverage:** `.github/workflows/ci.yml` installs grcli, runs `grcli validate` and
@@ -162,7 +162,7 @@ The Action SHALL run `grcli publish --dry-run` to pack the bundle locally, then
 ### Requirement: Hub mode publish
 
 When `grcli_url` is set, the Action SHALL use hub mode: `grcli publish` pushes
-through grc.store with OIDC auth and in-process sigstore-go signing. The Action
+through the configured hub with OIDC auth and in-process sigstore-go signing. The Action
 SHALL NOT require `password`, `registry`, `repository`, or `tag` in hub mode.
 
 #### Scenario: Successful hub-mode publish

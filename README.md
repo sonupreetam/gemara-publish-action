@@ -8,7 +8,7 @@ SLSA provenance, license validation).
 
 | | Direct mode (default) | Hub mode (`grcli_url` set) |
 |---|---|---|
-| **Push** | `grcli --dry-run` + ORAS to any OCI registry | `grcli publish` through grc.store hub |
+| **Push** | `grcli --dry-run` + ORAS to any OCI registry | `grcli publish` through a Gemara-compatible hub |
 | **Auth** | `username` + `password` | OIDC (`permissions: id-token: write`) |
 | **Signing** | External cosign (keyless) | In-process sigstore-go |
 | **Provenance** | SLSA provenance in bundle | SLSA provenance in bundle |
@@ -129,7 +129,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### Hub mode — publish through grc.store
+### Hub mode — publish through a Gemara hub
 
 ```yaml
 permissions:

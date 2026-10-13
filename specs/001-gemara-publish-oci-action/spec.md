@@ -27,7 +27,7 @@ provenance, and schema validation are delegated to
 CI callers need a **small, auditable** Action that:
 
 1. Accepts a root Gemara artifact YAML (Policy, Catalog, or Guidance) and publishes it as an OCI
-   bundle — either to the caller's own registry (direct mode) or through grc.store (hub mode).
+   bundle — either to the caller's own registry (direct mode) or through the provided Gemara-compatible hub implementation (hub mode, defaults to `grc.store`).
 2. Uses grcli for packing (assembly, SLSA provenance, license validation).
 3. Authenticates to the registry using **secrets the workflow supplies** (direct mode) or
    **OIDC** (hub mode), without echoing tokens.

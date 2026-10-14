@@ -249,6 +249,27 @@ jobs:
           fi
           echo "Correctly rejected promote without destination"
 
+      - name: Test validate without spec dir (should fail)
+        id: validate-no-spec
+        uses: ./
+        continue-on-error: true
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          repository: test/repo
+          tag: latest
+          password: dummy
+          validate: "true"
+
+      - name: Assert validate without spec dir was rejected
+        if: always()
+        run: |
+          if [[ "${{ steps.validate-no-spec.outcome }}" != "failure" ]]; then
+            echo "::error::Expected action to fail when validate=true without gemara_spec_dir, got: ${{ steps.validate-no-spec.outcome }}"
+            exit 1
+          fi
+          echo "Correctly rejected validate without spec dir"
+
       - name: Test working_directory traversal (should fail)
         id: traversal
         uses: ./

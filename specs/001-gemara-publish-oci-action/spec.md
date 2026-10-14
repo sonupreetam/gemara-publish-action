@@ -77,7 +77,7 @@ and verify destination trust with the same workflow identity constraints.
 The Action must:
 
 1. **Install grcli** via the `gemaraproj/grcli` install action (SHA-pinned, digest-verified).
-2. **Install ORAS** for registry push and promotion copy.
+   ORAS is installed as part of the grcli install action.
 3. **Validate** (optional): Run `grcli validate` against the Gemara CUE spec.
 4. **Pack:** Run `grcli publish --dry-run --no-sign` to assemble the bundle with SLSA
    provenance and license annotation into a local OCI layout.
@@ -109,15 +109,6 @@ as the version selector.
 
 - **WHEN** the workflow invokes the Action without setting `grcli_version`
 - **THEN** the Action SHALL install the default grcli version documented in `action.yml`
-
-### Requirement: Pinned ORAS CLI install
-
-The Action SHALL install the ORAS CLI using the `oras_version` input.
-
-#### Scenario: Default version is used when input omitted
-
-- **WHEN** the workflow invokes the Action without setting `oras_version`
-- **THEN** the Action SHALL install the default ORAS version documented in `action.yml`
 
 ### Requirement: License is required
 
@@ -205,5 +196,5 @@ When `promote_to_destination` is enabled, the Action SHALL honor `trust_mode` (`
   publish, version-flag, and input validation against a local registry.
 - **Backward compatible:** All existing inputs (`registry`, `tag`, `username`, `password`,
   `sign_source`, `verify_source`) work unchanged. Only `license` is new.
-- **Consumers** can pin `grcli_version` and `oras_version` and rely on stable
+- **Consumers** can pin `grcli_version` and rely on stable
   `with:` / `outputs.digest` semantics documented in [README.md](../../README.md).

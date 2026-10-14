@@ -89,11 +89,6 @@ jobs:
         with:
           version: v0.2.0
 
-      - name: Install ORAS CLI
-        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
-        with:
-          version: "1.2.0"
-
       - name: Test grcli unpack on legacy bundle
         run: |
           set -euo pipefail

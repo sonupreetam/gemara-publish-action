@@ -76,8 +76,8 @@ Design decisions are recorded in [docs/adr/](docs/adr/).
 | `repository` | Required in direct mode. Optional override in hub mode. | Both |
 | `tag` | Tag to push. Required in direct mode. | Direct |
 | `username`, `password` | Source registry auth. | Direct |
-| `validate` | Run `grcli validate` before publish. | Both |
-| `gemara_spec_dir` | Path to local Gemara spec checkout for validation. | Both |
+| `validate` | Run `grcli validate` before publish (default `false`; requires `gemara_spec_dir`). | Both |
+| `gemara_spec_dir` | Path to local Gemara spec checkout for validation. Required when `validate` is `true`. | Both |
 | `grcli_version` | grcli release tag to install (default `v0.2.0`). | Both |
 | `working_directory` | Working directory for resolving the `file` input (default `.`). | Both |
 | `sign_source`, `verify_source` | Source signature controls. | Direct |
@@ -88,7 +88,7 @@ Design decisions are recorded in [docs/adr/](docs/adr/).
 | `cosign_version` | Cosign release version (default `v2.4.0`). | Both |
 | `cosign_certificate_oidc_issuer` | OIDC issuer for cosign verify (default: GitHub Actions). | Both |
 | `allowed_identity_regex` | Regex for certificate identity in cosign verify. | Both |
-| `oras_version` | ORAS CLI version (default `1.2.0`). | Both |
+
 
 ## Outputs
 
@@ -182,7 +182,7 @@ change:
 | Before | After | Action needed |
 |--------|-------|---------------|
 | No `license` input | `license` **required** | Add `license: <SPDX>` to every caller |
-| `bundle_version` input accepted | Deprecated (ignored, will be removed) | Remove `bundle_version` from callers |
+| `bundle_version` input accepted | Removed (silently ignored by GitHub Actions if still passed) | Remove `bundle_version` from callers |
 | `password` always required | Required in direct mode only | No change for direct-mode callers |
 | `verified_source` = `false` when not attempted | `verified_source` = `skipped` when not attempted | Update `if:` guards that check `== 'false'` |
 | `verified_destination` = `false` when not attempted | `verified_destination` = `skipped` when not attempted | Update `if:` guards that check `== 'false'` |

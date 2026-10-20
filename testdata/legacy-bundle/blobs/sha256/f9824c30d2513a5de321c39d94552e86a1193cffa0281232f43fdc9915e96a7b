@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Minimal Gemara ControlCatalog for CI tests.
+title: CI Test Catalog
+metadata:
+  id: ci-test-catalog
+  type: ControlCatalog
+  version: "0.0.1"
+  gemara-version: "1.0.0"
+  description: Minimal catalog fixture for CI validation and assembly tests.
+  author:
+    id: ci
+    name: CI Test
+    type: Software
+  applicability-groups:
+    - id: all
+      title: All
+      description: Default applicability group for all controls.
+groups:
+  - id: ci-family
+    title: CI Controls
+    description: Controls used exclusively for CI validation.
+controls:
+  - id: CI.01
+    group: ci-family
+    title: CI Test Control
+    objective: Verify that the publish pipeline assembles and packs correctly.
+    state: Active
+    assessment-requirements:
+      - id: CI.01.TR01
+        text: The pipeline must produce a valid OCI manifest with at least one layer.
+        applicability:
+          - all
+        state: Active

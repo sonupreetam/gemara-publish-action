@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# Minimal Gemara ControlCatalog without metadata.version.
+# Used to test the --version flag path: grcli stamps the version from the
+# CLI into the bundle before packing (gemaraproj/grcli#4).
+title: CI Test Catalog (no version)
+metadata:
+  id: ci-test-catalog-no-version
+  type: ControlCatalog
+  gemara-version: "1.0.0"
+  description: Catalog fixture that omits metadata.version for CI --version flag tests.
+  author:
+    id: ci
+    name: CI Test
+    type: Software
+  applicability-groups:
+    - id: all
+      title: All
+      description: Default applicability group for all controls.
+groups:
+  - id: ci-family
+    title: CI Controls
+    description: Controls used exclusively for CI validation.
+controls:
+  - id: CI.01
+    group: ci-family
+    title: CI Test Control
+    objective: Verify that the publish pipeline assembles and packs correctly.
+    state: Active
+    assessment-requirements:
+      - id: CI.01.TR01
+        text: The pipeline must produce a valid OCI manifest with at least one layer.
+        applicability:
+          - all
+        state: Active

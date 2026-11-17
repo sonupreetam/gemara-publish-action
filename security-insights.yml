@@ -1,0 +1,104 @@
+---
+header:
+  schema-version: 2.2.0
+  last-updated: '2026-10-13'
+  last-reviewed: '2026-10-13'
+  url: https://raw.githubusercontent.com/gemaraproj/gemara-publish-action/main/security-insights.yml
+
+project:
+  name: gemara-publish-action
+  administrators:
+    - name: Jenn Power
+      affiliation: Red Hat
+      primary: true
+    - name: Eddie Knight
+      affiliation: Revanite
+      primary: false
+  documentation:
+    detailed-guide: https://github.com/gemaraproj/gemara-publish-action/blob/main/README.md
+  repositories:
+    - name: gemara-publish-action
+      url: https://github.com/gemaraproj/gemara-publish-action
+      comment: GitHub Action that validates, bundles, publishes, and signs Gemara artifacts as OCI bundles.
+  vulnerability-reporting:
+    reports-accepted: true
+    bug-bounty-available: false
+    contact:
+      name: Jenn Power
+      primary: true
+    policy: https://github.com/gemaraproj/.github/blob/main/SECURITY.md
+    comment: |
+      Report vulnerabilities privately through GitHub Private Vulnerability Reporting:
+      https://github.com/gemaraproj/gemara-publish-action/security/advisories/new
+
+repository:
+  url: https://github.com/gemaraproj/gemara-publish-action
+  status: active
+  accepts-change-request: true
+  accepts-automated-change-request: true
+  core-team:
+    - name: Jenn Power
+      affiliation: Red Hat
+      primary: true
+    - name: Sonu Preetam
+      affiliation: Red Hat
+      primary: false
+  documentation:
+    contributing-guide: https://github.com/gemaraproj/gemara-publish-action/blob/main/CONTRIBUTING.md
+    security-policy: https://github.com/gemaraproj/.github/blob/main/SECURITY.md
+  license:
+    url: https://github.com/gemaraproj/gemara-publish-action/blob/main/LICENSE
+    expression: Apache-2.0
+  security:
+    assessments:
+      self:
+        comment: |
+          Self assessment has not yet been completed.
+    tools:
+      - name: Dependabot
+        type: SCA
+        rulesets:
+          - built-in
+        results:
+          adhoc:
+            name: Scheduled SCA Scan Results
+            predicate-uri: https://docs.github.com/en/graphql/reference/objects#repositoryvulnerabilityalert
+            location: https://github.com/gemaraproj/gemara-publish-action/security/dependabot
+            comment: |
+              Dependabot checks Go modules and GitHub Actions weekly.
+              Configuration: https://github.com/gemaraproj/gemara-publish-action/blob/main/.github/dependabot.yaml
+        integration:
+          adhoc: true
+          ci: false
+          release: false
+      - name: CodeQL
+        type: SAST
+        rulesets:
+          - go
+          - actions
+        results:
+          adhoc:
+            name: Scheduled SAST Results
+            predicate-uri: https://docs.oasis-open.org/sarif/sarif/v2.1.0/cs01/schemas/sarif-schema-2.1.0.json
+            location: https://github.com/gemaraproj/gemara-publish-action/security/code-scanning
+          ci:
+            name: CI SAST Results
+            predicate-uri: https://docs.oasis-open.org/sarif/sarif/v2.1.0/cs01/schemas/sarif-schema-2.1.0.json
+            location: https://github.com/gemaraproj/gemara-publish-action/security/code-scanning
+        integration:
+          adhoc: true
+          ci: true
+          release: false
+      - name: OSPS Baseline Scanner
+        type: other
+        rulesets:
+          - osps-baseline-2026-02
+        results:
+          adhoc:
+            name: OSPS Baseline evaluation
+            predicate-uri: https://github.com/revanite-io/osps-baseline-action
+            location: https://github.com/gemaraproj/gemara-publish-action/security/code-scanning
+        integration:
+          adhoc: true
+          ci: false
+          release: false

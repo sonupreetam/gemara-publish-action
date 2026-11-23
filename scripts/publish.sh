@@ -38,8 +38,10 @@ if [[ -n "${GRCLI_URL}" ]]; then
   echo "Publishing (hub mode): ${INPUT_FILE}"
   grcli publish "${PUBLISH_ARGS[@]}" 2>&1 | tee "${RUNNER_TEMP}/grcli-publish-out.txt"
 
-  # Extract digest from grcli output (prints "manifest digest: sha256:...").
-  DIGEST=$(grep -oE 'sha256:[a-f0-9]{64}' "${RUNNER_TEMP}/grcli-publish-out.txt" | head -1 || true)
+  # Extract the manifest digest from grcli output. Anchored on the
+  # "manifest digest:" label so a body or layer digest printed earlier
+  # in the output cannot be grabbed by mistake.
+  DIGEST=$(grep -oE 'manifest digest: sha256:[a-f0-9]{64}' "${RUNNER_TEMP}/grcli-publish-out.txt" | head -1 | grep -oE 'sha256:[a-f0-9]{64}' || true)
   if [[ -z "${DIGEST}" ]]; then
     echo "::error::Could not extract digest from grcli publish output"
     cat "${RUNNER_TEMP}/grcli-publish-out.txt"

@@ -153,6 +153,12 @@ No `registry`, `username`, or `password` needed — grcli authenticates via
 OIDC and pushes to the hub-managed registry. Signing is in-process via
 sigstore-go.
 
+The hub's catalog indexes a bundle under the namespace derived from the
+bundle's `metadata.author.id`. If that does not match the repository
+namespace you publish to, the hub rejects the sync with
+`422 catalog_coordinate_mismatch`. Keep `metadata.author.id` in your
+artifact YAML equal to the namespace in the `repository` input.
+
 ## Repository layout
 
 - **`action.yml`** — Composite action definition (dual-mode: direct + hub).

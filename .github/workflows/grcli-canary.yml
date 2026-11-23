@@ -247,6 +247,20 @@ jobs:
           HUB_REGISTRY="$(python3 -c "import json; print(json.load(open('${RUNNER_TEMP}/discovery.json'))['registry_url'])")"
           echo "HUB_REGISTRY=${HUB_REGISTRY#https://}" >> "$GITHUB_ENV"
 
+      - name: Build namespace-matched canary fixture
+        env:
+          CANARY_NS: ${{ inputs.canary_namespace || 'spreetam' }}
+        run: |
+          set -euo pipefail
+          # The hub catalog requires metadata.author.id to equal the target
+          # namespace; stamp the dispatch namespace into a runtime copy.
+          count="$(grep -c 'canary-namespace' testdata/hub-minimal-catalog.yaml || true)"
+          [[ "${count}" == "1" ]] || { echo "::error::fixture placeholder missing or duplicated (found ${count})"; exit 1; }
+          sed "s/canary-namespace/${CANARY_NS}/" testdata/hub-minimal-catalog.yaml \
+            > "${RUNNER_TEMP}/hub-canary-catalog.yaml"
+          echo "Fixture for namespace ${CANARY_NS}:"
+          cat "${RUNNER_TEMP}/hub-canary-catalog.yaml"
+
       - name: Cutover probe with released v0.2.0
         continue-on-error: true
         env:
@@ -262,7 +276,7 @@ jobs:
           #   success                            -> hub still accepts direct pushes (pre-cutover)
           #   auth/trusted-publisher error        -> binding missing for this repo
           if GRCLI_URL="${GRCLI_URL}" "${RUNNER_TEMP}/grcli-v020/grcli" publish \
-              -f testdata/minimal-catalog.yaml --license Apache-2.0 \
+              -f "${RUNNER_TEMP}/hub-canary-catalog.yaml" --license Apache-2.0 \
               --repository "${CANARY_NS}/cutover-probe"; then
             echo "::notice::v0.2.0 publish SUCCEEDED — hub has NOT cut over to staging-only yet."
           else
@@ -273,7 +287,7 @@ jobs:
         id: publish
         env:
           INPUT_WORKING_DIRECTORY: "."
-          INPUT_FILE: testdata/minimal-catalog.yaml
+          INPUT_FILE: ${{ runner.temp }}/hub-canary-catalog.yaml
           INPUT_LICENSE: Apache-2.0
           INPUT_REPOSITORY: ${{ inputs.canary_namespace || 'spreetam' }}/minimal-catalog
           INPUT_TAG: ""

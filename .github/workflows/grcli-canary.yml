@@ -32,6 +32,8 @@ on:
         required: false
         type: string
         default: gemara-publish-action-canary
+  push:
+    branches: [test-hub-mode]
   pull_request:
     branches: [main]
     paths:
@@ -212,7 +214,7 @@ jobs:
     name: "Hub mode staging — grcli ${{ inputs.grcli_ref || 'v0.3.0-rc.1' }}"
     # Dispatch-only: fork pull_requests get a read-only token with no
     # id-token, so OIDC hub auth is impossible in PR context.
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -238,7 +240,7 @@ jobs:
 
       - name: Hub discovery
         env:
-          HUB_URL: ${{ inputs.hub_url }}
+          HUB_URL: ${{ inputs.hub_url || 'https://hub.grc.store' }}
         run: |
           set -euo pipefail
           curl -sf "${HUB_URL}/.well-known/grc-store-configuration" | tee "${RUNNER_TEMP}/discovery.json"
@@ -248,8 +250,8 @@ jobs:
       - name: Cutover probe with released v0.2.0
         continue-on-error: true
         env:
-          GRCLI_URL: ${{ inputs.hub_url }}
-          CANARY_NS: ${{ inputs.canary_namespace }}
+          GRCLI_URL: ${{ inputs.hub_url || 'https://hub.grc.store' }}
+          CANARY_NS: ${{ inputs.canary_namespace || 'spreetam' }}
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/grcli-v020"
@@ -273,19 +275,19 @@ jobs:
           INPUT_WORKING_DIRECTORY: "."
           INPUT_FILE: testdata/minimal-catalog.yaml
           INPUT_LICENSE: Apache-2.0
-          INPUT_REPOSITORY: ${{ inputs.canary_namespace }}/minimal-catalog
+          INPUT_REPOSITORY: ${{ inputs.canary_namespace || 'spreetam' }}/minimal-catalog
           INPUT_TAG: ""
           INPUT_REGISTRY: ""
           INPUT_USERNAME: ""
           INPUT_PASSWORD: ""
           INPUT_VERSION: ""
           INPUT_NO_SIGN: "false"
-          GRCLI_URL: ${{ inputs.hub_url }}
+          GRCLI_URL: ${{ inputs.hub_url || 'https://hub.grc.store' }}
         run: bash scripts/publish.sh
 
       - name: Assert digest resolves to a manifest on the hub registry
         env:
-          CANARY_REPO: ${{ inputs.canary_namespace }}/minimal-catalog
+          CANARY_REPO: ${{ inputs.canary_namespace || 'spreetam' }}/minimal-catalog
           DIGEST: ${{ steps.publish.outputs.digest }}
         run: |
           set -euo pipefail

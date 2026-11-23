@@ -4,8 +4,8 @@
 # The hub's catalog indexes a bundle under the namespace derived from its
 # metadata.author.id and rejects the sync when that does not match the
 # repository namespace (422 catalog_coordinate_mismatch). The canary
-# workflow copies this file at run time and replaces the
-# canary-namespace placeholder with the namespace under test.
+# workflow copies this file at run time and stamps the placeholder author
+# id with the namespace under test.
 title: CI Test Catalog (hub canary)
 metadata:
   id: ci-test-catalog-hub

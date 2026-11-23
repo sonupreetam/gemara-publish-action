@@ -254,7 +254,7 @@ jobs:
           set -euo pipefail
           # The hub catalog requires metadata.author.id to equal the target
           # namespace; stamp the dispatch namespace into a runtime copy.
-          count="$(grep -c 'canary-namespace' testdata/hub-minimal-catalog.yaml || true)"
+          count="$(grep -cE '^[[:space:]]*id: canary-namespace$' testdata/hub-minimal-catalog.yaml || true)"
           [[ "${count}" == "1" ]] || { echo "::error::fixture placeholder missing or duplicated (found ${count})"; exit 1; }
           sed "s/canary-namespace/${CANARY_NS}/" testdata/hub-minimal-catalog.yaml \
             > "${RUNNER_TEMP}/hub-canary-catalog.yaml"

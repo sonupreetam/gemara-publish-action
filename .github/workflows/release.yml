@@ -2,22 +2,21 @@
 name: "Release"
 on:
   workflow_dispatch:
-  pull_request:
-    types: [closed]
-    branches:
-      - main
+  push:
+    branches: [main]
+concurrency:
+  group: release
+  cancel-in-progress: false
+permissions: {}
 jobs:
   release:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.labels.*.name, 'release'))
     permissions:
       contents: write
       pull-requests: read
-    uses: github-community-projects/ospo-reusable-workflows/.github/workflows/release.yaml@a0cf79bd8756e0a9c1555bf4975eae7ce7a8e8dc
+    uses: github-community-projects/ospo-reusable-workflows/.github/workflows/release-minimal.yaml@ee8277bd76ef808b3a6e0bdd1f5a46a520a12c5d # v2.3.1
     with:
       publish: true
       release-config-name: release-drafter.yml
+      release-only-with-label: true
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}

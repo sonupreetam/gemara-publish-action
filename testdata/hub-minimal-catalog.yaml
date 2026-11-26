@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Minimal Gemara ControlCatalog for hub-mode canary publishes.
+#
+# The hub's catalog indexes a bundle under the namespace derived from its
+# metadata.author.id and rejects the sync when that does not match the
+# repository namespace (422 catalog_coordinate_mismatch). The canary
+# workflow copies this file at run time and stamps the placeholder author
+# id with the namespace under test.
+title: CI Test Catalog (hub canary)
+metadata:
+  id: ci-test-catalog-hub
+  type: ControlCatalog
+  version: "0.0.1"
+  gemara-version: "1.0.0"
+  author:
+    id: canary-namespace
+    name: gemara-publish-action canary
+    type: Software Assisted

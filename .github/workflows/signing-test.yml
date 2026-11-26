@@ -1,0 +1,86 @@
+name: Signing Test
+
+# Exercises the action's DEFAULT trust posture: keyless cosign sign and
+# certificate-identity verification. Every job in action-test.yml disables
+# signing, so without this workflow `cosign sign` and `verify_ref` never
+# execute in CI and verified_source/verified_destination are never asserted
+# as "true".
+#
+# Separate workflow (not a job in action-test.yml) because keyless signing
+# needs id-token: write, which fork pull_requests never receive — this runs
+# on push to any branch (including PR head branches, where it reports as a
+# commit status) and on workflow_dispatch.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sign-verify-defaults:
+    runs-on: ubuntu-latest
+    # Publishes with every signing input at its default (true), then
+    # promotes with trust_mode=resign at its defaults, and asserts the
+    # verification outputs are "true" — the documented output contract.
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Publish and promote with signing defaults
+        id: publish
+        uses: ./
+        with:
+          file: testdata/minimal-catalog.yaml
+          license: Apache-2.0
+          registry: localhost:5000
+          repository: test/signing-source
+          tag: "1.0.0"
+          username: test
+          password: test
+          validate: "false"
+          # sign_source and verify_source intentionally left at their
+          # defaults ("true"): keyless cosign sign + certificate-identity
+          # verification is the posture under test.
+          promote_to_destination: "true"
+          destination_registry: localhost:5000
+          destination_repository: test/signing-dest
+          destination_tag: "1.0.0"
+          destination_username: test
+          destination_password: test
+          # trust_mode resign (default), sign_destination and
+          # verify_destination at their defaults ("true").
+
+      - name: Assert verification outputs are true
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          SOURCE_REF: ${{ steps.publish.outputs.source_ref }}
+          VERIFIED_SOURCE: ${{ steps.publish.outputs.verified_source }}
+          DEST_REF: ${{ steps.publish.outputs.destination_ref }}
+          DEST_DIGEST: ${{ steps.publish.outputs.destination_digest }}
+          VERIFIED_DEST: ${{ steps.publish.outputs.verified_destination }}
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::Invalid digest: ${DIGEST}"; exit 1; }
+          [[ "${VERIFIED_SOURCE}" == "true" ]] || {
+            echo "::error::expected verified_source=true with signing defaults, got ${VERIFIED_SOURCE}"
+            exit 1
+          }
+          [[ "${VERIFIED_DEST}" == "true" ]] || {
+            echo "::error::expected verified_destination=true with resign defaults, got ${VERIFIED_DEST}"
+            exit 1
+          }
+          [[ "${DEST_DIGEST}" == "${DIGEST}" ]] || {
+            echo "::error::destination_digest does not match source digest: ${DEST_DIGEST} vs ${DIGEST}"
+            exit 1
+          }
+          echo "Default sign/verify posture verified: keyless signature created and certificate-identity verified on source and destination"

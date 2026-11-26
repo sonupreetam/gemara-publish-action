@@ -1,10 +1,19 @@
 ---
 layout: page
 title: Use a single pinned composite action for publish orchestration
+status: accepted
+date: 2026-05-08
 ---
+
+# Use a single pinned composite action for publish orchestration
 
 - **ADR:** 0001
 - **Status:** Accepted
+
+> **Note:** One mechanism detail has changed since this decision: the action no
+> longer builds a Go SDK (`cmd/grc/` was removed). It installs the prebuilt
+> grcli binary and pushes via ORAS — see [ADR-0004](0004-wrap-grcli.md). The
+> composite-action decision itself is unaffected.
 
 ## Context
 

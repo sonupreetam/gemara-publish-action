@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+# Invalid Gemara ControlCatalog for CI tests: the control's state is not a
+# member of the schema's enum and the required objective field is missing.
+# Used by the validation-failure test (specs/001 Scenario: Validation
+# failure): with validate: "true" and a spec dir, the action must fail at
+# the Validate step, before any pack or push.
+title: CI Invalid Catalog
+metadata:
+  id: ci-invalid-catalog
+  type: ControlCatalog
+  version: "0.0.1"
+  gemara-version: "1.0.0"
+  description: Catalog fixture that fails CUE validation, for the validate-failure CI case.
+  author:
+    id: ci
+    name: CI Test
+    type: Software
+  applicability-groups:
+    - id: all
+      title: All
+      description: Default applicability group for all controls.
+groups:
+  - id: ci-family
+    title: CI Controls
+    description: Controls used exclusively for CI validation.
+controls:
+  - id: CI.01
+    group: ci-family
+    title: CI Invalid Control
+    state: NotARealState
+    assessment-requirements:
+      - id: CI.01.TR01
+        text: The pipeline must produce a valid OCI manifest with at least one layer.
+        applicability:
+          - all
+        state: Active

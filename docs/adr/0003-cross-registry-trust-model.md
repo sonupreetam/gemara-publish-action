@@ -1,10 +1,22 @@
 ---
 layout: page
 title: Default to resign for cross-registry promotion trust
+status: accepted
+date: 2026-05-08
 ---
+
+# Default to resign for cross-registry promotion trust
 
 - **ADR:** 0003
 - **Status:** Accepted
+
+> **Correction:** the destination copy keeps the source digest — ORAS copy is
+> content-addressed and `scripts/finalize.sh` enforces source/destination
+> digest equality after promotion. The premise that "the destination copy
+> gets a new digest" (and the digest-mismatch half of the `copy-referrers`
+> rejection below) is wrong; the signature-does-not-transfer and
+> registry-referrer-support rationales stand. The resign decision is
+> unaffected.
 
 ## Context
 

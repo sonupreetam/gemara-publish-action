@@ -1,0 +1,333 @@
+name: grcli canary
+
+# Early-warning tests against an UNRELEASED grcli ref (default: v0.3.0-rc.1,
+# which contains the staging publish flow #16, CUE-registry validate #6, and
+# the go-gemara v0.9.2 bundle model #12 — none of that is in released v0.2.0).
+#
+# Why source-built: grcli ships OCI artifacts only for released tags, so an
+# unreleased ref cannot be installed via the grcli install action. The jobs
+# below build grcli from source and exercise this action's scripts directly,
+# bypassing action.yml's pinned install step (which would overwrite the
+# source-built binary with v0.2.0).
+#
+# Discipline: results against a moving ref are signal, not proof. Re-verify
+# against the real release tag when it is cut, then update grcli_version and
+# the install-action pin in action.yml. The hub-mode job is dispatch-only;
+# no required checks. The compat, validate, and direct-mode jobs also run
+# on PRs touching scripts/ and testdata/.
+
+on:
+  workflow_dispatch:
+    inputs:
+      grcli_ref:
+        description: "grcli git ref to build from source (tag or SHA)"
+        required: false
+        type: string
+        default: v0.3.0-rc.1
+      hub_url:
+        description: "Hub base URL for the hub-mode job"
+        required: false
+        type: string
+        default: https://hub.grc.store
+      canary_namespace:
+        description: "Hub namespace for canary publishes (needs a trusted-CI-publisher binding for this repo)"
+        required: false
+        type: string
+        default: gemara-publish-action-canary
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/grcli-canary.yml'
+      - 'scripts/**'
+      - 'testdata/**'
+
+permissions:
+  contents: read
+
+env:
+  GRCLI_REF: ${{ inputs.grcli_ref || 'v0.3.0-rc.1' }}
+  # CUE version skew check: v0.15.1 is what action.yml pins, v0.17.1 is what
+  # grcli's own CI runs. validate must pass under both.
+  CUE_ACTION_PIN: "v0.15.1"
+  CUE_GRCLI_CI: "v0.17.1"
+
+jobs:
+  legacy-bundle-compat:
+    name: "Legacy bundle compat — grcli ${{ inputs.grcli_ref || 'v0.3.0-rc.1' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26"
+
+      - name: Build grcli from source
+        run: |
+          set -euo pipefail
+          go install "github.com/gemaraproj/grcli@${GRCLI_REF}"
+          go version -m "$(command -v grcli)" | head -3
+          grcli --help >/dev/null
+
+      - name: grcli unpack on legacy bundle (v0.1.1-era fixture)
+        run: |
+          set -euo pipefail
+          grcli unpack --source testdata/legacy-bundle --version 0.0.1 --no-verify \
+            --output "${RUNNER_TEMP}/legacy-unpack"
+          echo "grcli unpack succeeded on legacy bundle"
+
+      - name: Unpacked content matches fixture
+        run: |
+          set -euo pipefail
+          test -f "${RUNNER_TEMP}/legacy-unpack/minimal-catalog.yaml" || {
+            echo "::error::Expected minimal-catalog.yaml in unpacked output"
+            find "${RUNNER_TEMP}/legacy-unpack" -type f
+            exit 1
+          }
+          diff "${RUNNER_TEMP}/legacy-unpack/minimal-catalog.yaml" testdata/minimal-catalog.yaml
+          echo "Unpacked content matches fixture"
+
+      - name: grcli cat on legacy bundle
+        run: |
+          set -euo pipefail
+          grcli cat --source testdata/legacy-bundle --version 0.0.1 \
+            | tee "${RUNNER_TEMP}/cat-out.txt"
+          grep -q 'gemara' "${RUNNER_TEMP}/cat-out.txt" || {
+            echo "::error::Expected cat output to contain Gemara YAML content"
+            exit 1
+          }
+
+  validate-without-spec-dir:
+    # grcli#6 (resolve the Gemara schema from the CUE central registry,
+    # unreleased) is the prerequisite for flipping this action's validate
+    # default to true (#46). v0.2.0 requires --spec; the canary ref must not.
+    name: "validate w/o --spec — grcli ${{ inputs.grcli_ref || 'v0.3.0-rc.1' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26"
+
+      - name: Build grcli from source
+        run: |
+          set -euo pipefail
+          go install "github.com/gemaraproj/grcli@${GRCLI_REF}"
+
+      - name: Validate with action.yml's CUE pin (${{ env.CUE_ACTION_PIN }})
+        uses: cue-lang/setup-cue@b0e30e540a2dae47304ebf16586a5b2db023b61c # v2.0.0
+        with:
+          version: ${{ env.CUE_ACTION_PIN }}
+
+      - name: grcli validate (no --spec, CUE ${{ env.CUE_ACTION_PIN }})
+        run: |
+          set -euo pipefail
+          grcli validate -f testdata/minimal-catalog.yaml
+          echo "Validation passed without --spec under CUE ${CUE_ACTION_PIN}"
+
+      - name: Switch to grcli CI's CUE (${{ env.CUE_GRCLI_CI }})
+        uses: cue-lang/setup-cue@b0e30e540a2dae47304ebf16586a5b2db023b61c # v2.0.0
+        with:
+          version: ${{ env.CUE_GRCLI_CI }}
+
+      - name: grcli validate (no --spec, CUE ${{ env.CUE_GRCLI_CI }})
+        run: |
+          set -euo pipefail
+          grcli validate -f testdata/minimal-catalog.yaml
+          echo "Validation passed without --spec under CUE ${CUE_GRCLI_CI}"
+
+  direct-mode-smoke:
+    # Full scripts/publish.sh direct-mode run against a local registry with
+    # the canary grcli. Exercises the fragile integration points: grcli
+    # --dry-run output format (layout-tag resolution), ORAS copy, digest
+    # resolution. The manifest-fetch assertion proves the extracted digest
+    # is a MANIFEST digest — if grcli starts printing layer digests first,
+    # publish.sh's first-sha256 regex would silently grab the wrong one.
+    name: "Direct mode — grcli ${{ inputs.grcli_ref || 'v0.3.0-rc.1' }}"
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26"
+
+      - name: Build grcli from source
+        run: |
+          set -euo pipefail
+          go install "github.com/gemaraproj/grcli@${GRCLI_REF}"
+
+      # v2.0.0 — same pin as grcli's own install action provides.
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3
+        with:
+          version: 1.3.0
+
+      - name: Run scripts/publish.sh (direct mode, local registry)
+        id: publish
+        env:
+          INPUT_WORKING_DIRECTORY: "."
+          INPUT_FILE: testdata/minimal-catalog.yaml
+          INPUT_LICENSE: Apache-2.0
+          INPUT_REGISTRY: localhost:5000
+          INPUT_REPOSITORY: canary/test
+          INPUT_TAG: latest
+          INPUT_USERNAME: test
+          INPUT_PASSWORD: test
+          INPUT_VERSION: ""
+          INPUT_NO_SIGN: "true"
+          GRCLI_URL: ""
+        run: bash scripts/publish.sh
+
+      - name: Assert outputs and manifest-digest correctness
+        env:
+          MODE: ${{ steps.publish.outputs.mode }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${MODE}" == "direct" ]] || { echo "::error::Expected mode=direct, got ${MODE}"; exit 1; }
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::Invalid digest: ${DIGEST}"; exit 1; }
+          echo "publish.sh extracted: ${DIGEST}"
+          # The critical assertion: the regex-extracted digest must resolve to
+          # a manifest, not a layer blob. oras manifest fetch fails on blobs.
+          oras manifest fetch "localhost:5000/canary/test@${DIGEST}" >/dev/null
+          echo "Extracted digest is a manifest digest (regex not grabbing a layer digest)"
+
+  hub-mode-staging:
+    # grcli publish through the hub against the staging flow (#16). External
+    # preconditions we do not control: (a) a trusted-CI-publisher binding for
+    # this repo's OIDC identity on the canary namespace, (b) the hub having
+    # done the staging cutover. continue-on-error: the diagnostics are the
+    # value — a 401 on the v0.2.0 probe means the hub is staging-only; an
+    # auth error on both means the binding is missing.
+    name: "Hub mode staging — grcli ${{ inputs.grcli_ref || 'v0.3.0-rc.1' }}"
+    # Dispatch-only: fork pull_requests get a read-only token with no
+    # id-token, so OIDC hub auth is impossible in PR context.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.26"
+
+      - name: Build grcli from source
+        run: |
+          set -euo pipefail
+          go install "github.com/gemaraproj/grcli@${GRCLI_REF}"
+
+      - uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
+        with:
+          version: 1.3.0
+
+      - name: Hub discovery
+        env:
+          HUB_URL: ${{ inputs.hub_url }}
+        run: |
+          set -euo pipefail
+          # Shared helper (scripts/lib.sh): same normalization and host
+          # validation as finalize.sh's hub-mode discovery. The validated
+          # host is safe to write to GITHUB_ENV — an unvalidated value from
+          # the discovery response could inject environment variables into
+          # this id-token: write job.
+          # shellcheck source=scripts/lib.sh
+          source scripts/lib.sh
+          HUB_REGISTRY="$(hub_registry_host "${HUB_URL}")"
+          echo "HUB_REGISTRY=${HUB_REGISTRY}" >> "$GITHUB_ENV"
+
+      - name: Build namespace-matched canary fixture
+        env:
+          CANARY_NS: ${{ inputs.canary_namespace || 'gemara-publish-action-canary' }}
+        run: |
+          set -euo pipefail
+          # The hub catalog requires metadata.author.id to equal the target
+          # namespace; stamp the dispatch namespace into a runtime copy. The
+          # copy must live inside the workspace: publish.sh's
+          # assert_within_workspace guard rejects files outside it (RUNNER_TEMP
+          # is a sibling of the checkout, not inside it).
+          python3 -c '
+          import sys
+          ns, src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+          needle = "id: canary-namespace"
+          lines = open(src).read().splitlines(keepends=True)
+          hits = [i for i, l in enumerate(lines) if l.strip() == needle]
+          if len(hits) != 1:
+              print(f"::error::fixture placeholder missing or duplicated (found {len(hits)})")
+              sys.exit(1)
+          lines[hits[0]] = lines[hits[0]].replace(needle, f"id: {ns}")
+          open(dst, "w").write("".join(lines))
+          ' "${CANARY_NS}" testdata/hub-minimal-catalog.yaml "${GITHUB_WORKSPACE}/hub-canary-catalog.yaml"
+          echo "Fixture for namespace ${CANARY_NS}:"
+          cat "${GITHUB_WORKSPACE}/hub-canary-catalog.yaml"
+
+      - name: Cutover probe with released v0.2.0
+        continue-on-error: true
+        env:
+          GRCLI_URL: ${{ inputs.hub_url }}
+          CANARY_NS: ${{ inputs.canary_namespace || 'gemara-publish-action-canary' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/grcli-v020"
+          # Digest-pinned (index digest for the v0.2.0 tag, resolved from
+          # ghcr.io): this job holds id-token: write, so the binary must not
+          # be fetched by mutable tag. If v0.2.0 is ever re-tagged, update
+          # the digest — do not drop back to the tag.
+          oras pull "ghcr.io/gemaraproj/grcli@sha256:5a60fd976ab3be38768830b69a883c66fd58a091cf464917f801fcd63c633ee1" --platform linux/amd64
+          install grcli "${RUNNER_TEMP}/grcli-v020/grcli"
+          # Expected outcomes:
+          #   401 UNAUTHORIZED at first blob push -> hub is staging-only (cutover done)
+          #   success                            -> hub still accepts direct pushes (pre-cutover)
+          #   auth/trusted-publisher error        -> binding missing for this repo
+          if GRCLI_URL="${GRCLI_URL}" "${RUNNER_TEMP}/grcli-v020/grcli" publish \
+              -f "${GITHUB_WORKSPACE}/hub-canary-catalog.yaml" --license Apache-2.0 \
+              --repository "${CANARY_NS}/cutover-probe"; then
+            echo "::notice::v0.2.0 publish SUCCEEDED — hub has NOT cut over to staging-only yet."
+          else
+            echo "::notice::v0.2.0 publish failed (see output above) — if 401 at blob push, the hub is staging-only (cutover done)."
+          fi
+
+      - name: Run scripts/publish.sh (hub mode, canary grcli)
+        id: publish
+        env:
+          INPUT_WORKING_DIRECTORY: "."
+          INPUT_FILE: ${{ github.workspace }}/hub-canary-catalog.yaml
+          INPUT_LICENSE: Apache-2.0
+          INPUT_REPOSITORY: ${{ inputs.canary_namespace || 'gemara-publish-action-canary' }}/minimal-catalog
+          INPUT_TAG: ""
+          INPUT_REGISTRY: ""
+          INPUT_USERNAME: ""
+          INPUT_PASSWORD: ""
+          INPUT_VERSION: ""
+          INPUT_NO_SIGN: "false"
+          GRCLI_URL: ${{ inputs.hub_url }}
+        run: bash scripts/publish.sh
+
+      - name: Assert digest resolves to a manifest on the hub registry
+        env:
+          CANARY_REPO: ${{ inputs.canary_namespace || 'gemara-publish-action-canary' }}/minimal-catalog
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "::error::publish.sh did not extract a digest"; exit 1; }
+          echo "publish.sh extracted: ${DIGEST}"
+          # Anonymous reads are enabled on the hub registry.
+          oras manifest fetch "${HUB_REGISTRY}/${CANARY_REPO}@${DIGEST}" >/dev/null
+          echo "Extracted digest is a manifest digest on ${HUB_REGISTRY}"
